@@ -19,6 +19,8 @@ The first testing version is a manual one-shot command. Scheduling, local LLM fa
 - Analyze articles with OpenAI only.
 - Identify whether the article is relevant to one or more portfolio assets.
 - Map commodity themes to affected portfolio holdings when appropriate.
+- Track each Gmail-message-to-article-link outcome independently.
+- Tie relevance decisions to the current portfolio import and prompt version.
 - Store metadata and structured summary fields in SQLite.
 - Send one Telegram private-chat message per relevant portfolio asset per article.
 - Mark emails as read only after successful relevant processing.
@@ -68,17 +70,18 @@ If access fails, the agent records the failure locally and leaves the Gmail emai
 5. Agent queries Gmail for unread emails from `account@seekingalpha.com`.
 6. For each unread email:
    - Extract article URL(s).
-   - Skip URLs already processed successfully.
-   - Open the article in a persistent browser profile.
+   - Create or update one local link record per extracted URL for the current portfolio import and prompt version.
+   - Skip links already in a terminal local state for the current portfolio import and prompt version.
+   - Open each remaining article in a persistent browser profile.
    - If Seeking Alpha login/challenge is required, pause and prompt the user to complete it.
    - Extract headline, date, author, and article body text where available.
    - Ask OpenAI to classify relevance to portfolio assets and commodity exposures.
    - For each relevant asset, ask OpenAI to produce structured fields.
-   - Save article and per-asset summaries to SQLite.
+   - Save article metadata, link status, and per-asset summaries to SQLite.
    - Send one Telegram message per relevant asset.
-   - Mark the Gmail message as read only if at least one relevant summary was successfully saved and sent.
-7. Irrelevant emails remain unread, but are recorded locally as seen/irrelevant to avoid repeated work in the same version.
-8. Failed emails remain unread and are retried on the next run.
+   - Mark the Gmail message as read only if every extracted article link has reached a terminal acceptable state and at least one relevant summary was successfully saved and sent.
+7. Irrelevant emails remain unread, but their links are recorded locally as `irrelevant_seen` for the current portfolio import and prompt version to avoid repeated work.
+8. Failed emails remain unread and only failed links are retried on the next run.
 
 ### 1.6 Portfolio Import Design
 
@@ -93,6 +96,12 @@ Preferred columns:
 - `SA Analyst Ratings`
 - `Wall Street Ratings`
 
+Optional context columns, when present:
+
+- `Sector`
+- `Industry`
+- `Asset Type`
+
 Import rules:
 
 - Treat all clean rows in the configured portfolio file as current portfolio holdings.
@@ -100,11 +109,19 @@ Import rules:
 - Ignore rows where `Symbol` is numeric, blank, a date, or otherwise not ticker-like.
 - If `Excel view including prices` is missing, fall back to the first sheet with a `Symbol` column.
 - Preserve existing ratings from the portfolio file for context.
+- Preserve optional sector, industry, and asset-type fields when available.
 - Store a file hash and import timestamp so future runs can tell whether the portfolio changed.
+- Tie every article relevance decision and per-asset summary to the portfolio import used for that decision.
+- If the portfolio file hash changes, previous irrelevant or relevant decisions are not treated as final for the new import.
 
 ### 1.7 Commodity Mapping Design
 
 Commodity articles should be mapped to relevant portfolio holdings from the current file.
+The mapper should use only the current imported assets and should prefer deterministic signals before LLM judgment:
+
+- symbol and company/ETF name.
+- optional sector, industry, and asset-type fields when available.
+- configurable keyword rules and per-symbol overrides.
 
 Initial commodity theme mapping:
 
@@ -138,19 +155,42 @@ Behavior:
 - Process unread messages only.
 - Extract Seeking Alpha article URLs from the email HTML/text body.
 - Store Gmail message ID, thread ID, sender, subject, received timestamp, and processing status.
-- Mark as read only after successful relevant processing.
+- Store one link-level record for each extracted article URL.
+- Skip link records already in a terminal local state for the current portfolio import and prompt version.
+- Mark as read only after successful relevant processing for all extracted links in the message.
 - Leave irrelevant emails unread.
 - Leave failed emails unread.
 
-Status model:
+Message status model:
 
 - `new`
+- `scanned`
+- `irrelevant_seen`
+- `processed_relevant`
+- `partially_failed`
+- `failed_access`
+- `failed_extract`
+- `failed_llm`
+- `failed_telegram`
+- `failed_mark_read`
+
+Link status model:
+
+- `queued`
+- `duplicate_skipped`
 - `irrelevant_seen`
 - `processed_relevant`
 - `failed_access`
 - `failed_extract`
 - `failed_llm`
 - `failed_telegram`
+- `failed_mark_read`
+
+Mark-read rule:
+
+- If any extracted link fails, leave the Gmail message unread.
+- If all extracted links are irrelevant, leave the Gmail message unread but skip those link records on future runs with the same portfolio import and prompt version.
+- If at least one link produces a relevant alert and all other links are either successful, irrelevant, or duplicate-skipped, mark the Gmail message read.
 
 ### 1.9 Article Access Design
 
@@ -184,7 +224,17 @@ Recommended model flow:
 - `gpt-5-mini` for final structured summaries if the article is long, multi-stock, ambiguous, or high priority.
 - In early testing, use one configurable model to simplify debugging.
 
-The LLM must return strict JSON. The application validates JSON with a schema before saving or sending.
+Use the OpenAI Responses API with schema-constrained Structured Outputs where supported. The LLM must return JSON matching the application's configured schema. The application validates JSON with a local schema before saving or sending.
+
+The analyzer must treat these as `failed_llm` unless a single retry succeeds:
+
+- malformed JSON.
+- schema validation failure.
+- model refusal.
+- incomplete output.
+- missing required portfolio-symbol linkage.
+
+The retry should ask the model to return the same schema using the original article context and should not attempt to infer missing financial facts in application code.
 
 The LLM must distinguish:
 
@@ -213,7 +263,7 @@ Action relevance should be one of:
 - `thesis_change`
 - `risk_warning`
 - `material_news`
-- `possible_action`
+- `portfolio_attention`
 
 ### 1.11 Summary Format
 
@@ -276,6 +326,8 @@ CREATE TABLE assets (
   symbol TEXT NOT NULL,
   name TEXT,
   asset_type TEXT,
+  sector TEXT,
+  industry TEXT,
   priority INTEGER NOT NULL DEFAULT 1,
   price REAL,
   quant_rating TEXT,
@@ -299,6 +351,24 @@ CREATE TABLE gmail_messages (
   last_attempt_at TEXT
 );
 
+CREATE TABLE gmail_article_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  gmail_message_id INTEGER NOT NULL,
+  portfolio_import_id INTEGER NOT NULL,
+  prompt_version TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  canonical_url TEXT,
+  article_id INTEGER,
+  status TEXT NOT NULL,
+  status_detail TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_attempt_at TEXT,
+  UNIQUE(gmail_message_id, portfolio_import_id, prompt_version, source_url),
+  FOREIGN KEY(gmail_message_id) REFERENCES gmail_messages(id),
+  FOREIGN KEY(portfolio_import_id) REFERENCES portfolio_imports(id),
+  FOREIGN KEY(article_id) REFERENCES articles(id)
+);
+
 CREATE TABLE articles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   canonical_url TEXT NOT NULL UNIQUE,
@@ -315,6 +385,9 @@ CREATE TABLE article_asset_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   article_id INTEGER NOT NULL,
   gmail_message_id INTEGER NOT NULL,
+  gmail_article_link_id INTEGER NOT NULL,
+  portfolio_import_id INTEGER NOT NULL,
+  asset_id INTEGER,
   symbol TEXT NOT NULL,
   company_name TEXT,
   author_rating TEXT,
@@ -328,11 +401,14 @@ CREATE TABLE article_asset_summaries (
   short_summary TEXT NOT NULL,
   confidence REAL,
   llm_model TEXT,
-  prompt_version TEXT,
+  prompt_version TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE(article_id, symbol),
+  UNIQUE(article_id, symbol, portfolio_import_id, prompt_version),
   FOREIGN KEY(article_id) REFERENCES articles(id),
-  FOREIGN KEY(gmail_message_id) REFERENCES gmail_messages(id)
+  FOREIGN KEY(gmail_message_id) REFERENCES gmail_messages(id),
+  FOREIGN KEY(gmail_article_link_id) REFERENCES gmail_article_links(id),
+  FOREIGN KEY(portfolio_import_id) REFERENCES portfolio_imports(id),
+  FOREIGN KEY(asset_id) REFERENCES assets(id)
 );
 
 CREATE TABLE runs (
@@ -366,9 +442,15 @@ gmail_sender: "account@seekingalpha.com"
 database_path: "data/portfolio_news.db"
 browser_profile_dir: "data/browser-profile"
 openai_model: "gpt-5-nano"
+prompt_version: "v1"
 telegram_enabled: true
 mark_relevant_as_read: true
 leave_irrelevant_unread: true
+commodity_exposure_overrides:
+  gold: []
+  silver: []
+  oil_energy: []
+  copper: []
 ```
 
 ### 1.14 Error Handling
@@ -380,19 +462,22 @@ leave_irrelevant_unread: true
   - Stop run.
   - Record run failure.
 - Article access failure:
-  - Record failure.
+  - Record link failure.
   - Leave email unread.
 - Article extraction failure:
-  - Record failure.
+  - Record link failure.
   - Leave email unread.
 - LLM validation failure:
   - Retry once with stricter repair prompt.
-  - If still failing, record failure and leave email unread.
+  - If still failing, record link failure and leave email unread.
 - Telegram failure:
-  - Record failure and leave email unread so the alert can be retried.
+  - Record link failure and leave email unread so the alert can be retried.
 - Successful irrelevant result:
-  - Record `irrelevant_seen`.
+  - Record link status `irrelevant_seen`.
   - Leave email unread.
+- Multi-link message:
+  - Leave the email unread if any extracted link failed.
+  - Mark the email read only when all extracted links reached terminal acceptable states and at least one relevant alert was saved and sent.
 
 ### 1.15 Security and Privacy
 
@@ -462,13 +547,16 @@ Definition of Done:
 - Database is created at the configured path.
 - All schema tables exist.
 - Inserts are idempotent where needed.
+- Gmail article links are tracked separately from Gmail messages and articles.
 - Duplicate articles are ignored by canonical URL.
-- Duplicate article-stock summaries are ignored by `(article_id, symbol)`.
+- Duplicate article-stock summaries are ignored by `(article_id, symbol, portfolio_import_id, prompt_version)`.
+- Relevance decisions can be recomputed when the portfolio import or prompt version changes.
 
 Testing:
 
 - Unit test migration creates all tables.
 - Unit test duplicate article insert.
+- Unit test Gmail article link upsert and status update.
 - Unit test run lifecycle.
 - Unit test summary insert and retrieval.
 
@@ -481,6 +569,7 @@ Import portfolio symbols from Excel or CSV. Prefer the `Excel view including pri
 Definition of Done:
 
 - Imports symbols, names, ratings, and prices from the sample workbook.
+- Imports optional sector, industry, and asset-type fields when present.
 - Ignores non-symbol rows such as date/lot rows.
 - Saves imported assets to SQLite.
 - Supports CSV fallback with equivalent headers.
@@ -492,6 +581,7 @@ Testing:
 - Unit test invalid symbol filtering.
 - Unit test fallback sheet selection.
 - Unit test CSV import.
+- Unit test changed portfolio hash creates a distinct import.
 
 ### Ticket 4 - Commodity Exposure Mapper
 
@@ -504,7 +594,7 @@ Definition of Done:
 - Maps gold/precious metals, silver, oil/energy, and copper to candidate portfolio symbols.
 - Uses only assets from the current portfolio import.
 - Produces explainable mapping metadata.
-- Allows overrides in config later.
+- Allows per-theme overrides in config.
 
 Testing:
 
@@ -527,12 +617,16 @@ Definition of Done:
 - Query uses `from:account@seekingalpha.com is:unread`.
 - Reads message subject, sender, received timestamp, thread ID, body HTML/text.
 - Extracts Seeking Alpha URLs.
+- Stores one Gmail article link row per extracted URL for the current portfolio import and prompt version.
+- Skips locally terminal link rows for the current portfolio import and prompt version.
 - Does not mark emails as read yet.
 - Stores message records in SQLite.
 
 Testing:
 
 - Unit test URL extraction from sample email HTML.
+- Unit test multi-link email creates multiple link records.
+- Unit test irrelevant link is skipped on the next run for the same portfolio import and prompt version.
 - Unit test sender/query construction.
 - Manual integration test with Gmail account.
 - Confirm unread email remains unread after scan-only mode.
@@ -571,8 +665,9 @@ Definition of Done:
 - Returns only portfolio-relevant assets.
 - Distinguishes author rating, Quant rating, Wall Street rating, and inferred sentiment.
 - Produces action relevance, price targets, forward-looking data, and short summary.
-- Validates model output against schema.
-- Retries once on invalid JSON.
+- Uses schema-constrained Structured Outputs where supported.
+- Validates model output against schema before saving or sending.
+- Retries once on malformed JSON, schema validation failure, model refusal, or incomplete output.
 
 Testing:
 
@@ -581,6 +676,7 @@ Testing:
 - Unit test mocked OpenAI response for single-stock article.
 - Unit test mocked OpenAI response for multi-stock article.
 - Unit test mocked irrelevant article result.
+- Unit test refusal or incomplete output becomes `failed_llm`.
 - Manual test with one real article.
 
 ### Ticket 8 - Telegram Sender
@@ -616,15 +712,17 @@ Definition of Done:
   python run_agent.py --once
   ```
 
-- Relevant successful emails are marked read.
+- Relevant successful emails are marked read only after every extracted link reaches a terminal acceptable state.
 - Irrelevant emails remain unread and are recorded as `irrelevant_seen`.
 - Failed emails remain unread and are recorded with failure status.
-- Duplicate article URLs are skipped forever once processed successfully.
+- Duplicate article URLs are skipped for the same portfolio import and prompt version once processed successfully.
+- Multi-link emails remain unread when any extracted link fails.
 - Run summary is saved to SQLite.
 
 Testing:
 
 - Unit test orchestrator with mocked Gmail, browser, OpenAI, Telegram, and DB.
+- Unit test multi-link email mark-read policy.
 - Integration test against a fake local article page.
 - Manual end-to-end test with one real Seeking Alpha email.
 
@@ -637,6 +735,8 @@ Implement Gmail label modification only after all relevant summaries for an emai
 Definition of Done:
 
 - Removes `UNREAD` from message only after success.
+- Requires every extracted link in the message to be in a terminal acceptable state.
+- Requires at least one relevant summary to have been saved and sent.
 - Does not mark irrelevant emails read.
 - Does not mark failed emails read.
 - Logs the action.
@@ -645,7 +745,8 @@ Testing:
 
 - Unit test success path calls mark-read.
 - Unit test irrelevant path does not call mark-read.
-- Unit test Telegram failure path does not call mark-read.
+- Unit test mark-read failure is recorded without hiding the unread message.
+- Unit test one-success-one-failure multi-link email does not call mark-read.
 - Manual Gmail verification.
 
 ### Ticket 11 - Operator Documentation
@@ -664,11 +765,13 @@ Definition of Done:
 - Documents first Seeking Alpha login flow.
 - Documents how to run `--once`.
 - Documents known limitations.
+- Documents real-service acceptance checks.
 
 Testing:
 
 - Follow the setup docs on a clean checkout or fresh virtual environment.
 - Verify every command in the docs runs or has clear prerequisites.
+- Verify the acceptance checklist names the expected SQLite, Telegram, and Gmail outcomes.
 
 ### Ticket 12 - End-to-End Acceptance Test
 
@@ -685,7 +788,7 @@ Definition of Done:
 - OpenAI produces valid structured summary.
 - SQLite contains article metadata and per-stock summaries.
 - Telegram receives one message per relevant stock.
-- Successfully processed relevant Gmail email is marked read.
+- Successfully processed relevant Gmail email is marked read only after every extracted link reaches a terminal acceptable state.
 - Irrelevant or failed emails remain unread.
 
 Testing:
@@ -722,11 +825,13 @@ V1 is complete when:
 - The agent can open a Seeking Alpha article in a persistent browser session.
 - Manual login/challenge completion is supported.
 - Relevant article-stock summaries are stored in SQLite.
+- Gmail-message-to-article-link processing state is stored in SQLite.
+- Relevance decisions are tied to the active portfolio import and prompt version.
 - One Telegram private-chat message is sent per relevant stock.
-- Relevant successfully processed email is marked read.
+- Relevant successfully processed email is marked read only after all extracted links reach terminal acceptable states.
 - Irrelevant emails remain unread.
 - Failed emails remain unread.
-- Duplicate successfully processed article URLs are not processed again.
+- Duplicate successfully processed article URLs are not processed again for the same portfolio import and prompt version.
 - No full article text is stored in the database.
 - OpenAI is the only LLM provider used.
 
