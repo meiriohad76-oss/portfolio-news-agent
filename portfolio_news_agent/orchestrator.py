@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 from portfolio_news_agent.article_browser import (
@@ -122,6 +121,12 @@ def run_once(
         for link in get_queued_article_links(connection):
             touched_message_ids.add(int(link["gmail_message_id"]))
             try:
+                update_gmail_article_link_status(
+                    connection,
+                    link_id=int(link["id"]),
+                    status="processing",
+                    status_detail="Opening article and running LLM analysis",
+                )
                 created = _process_link(
                     connection=connection,
                     config=config,

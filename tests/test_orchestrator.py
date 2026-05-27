@@ -36,6 +36,22 @@ class FakeArticleSession:
         return self.html_by_url[url]
 
 
+class StateInspectingArticleSession:
+    def __init__(self, connection, html_by_url):
+        self.connection = connection
+        self.html_by_url = html_by_url
+        self.opened = []
+        self.status_seen_before_open = None
+
+    def open(self, url):
+        self.opened.append(url)
+        self.status_seen_before_open = self.connection.execute(
+            "SELECT status, status_detail FROM gmail_article_links WHERE source_url = ?",
+            (url,),
+        ).fetchone()
+        return self.html_by_url[url]
+
+
 class FakeAnalysisClient:
     def __init__(self, response):
         self.response = response
@@ -145,6 +161,56 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(gmail.marked_read, ["gmail-1"])
         self.assertEqual(len(telegram.messages), 1)
         self.assertIn("AEM - bullish - material_news", telegram.messages[0]["text"])
+
+    def test_run_once_marks_article_link_processing_before_opening_browser(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
+            connection = sqlite3.connect(":memory:")
+            migrate(connection)
+            gmail = FakeGmailIntegration(
+                [
+                    self._message(
+                        "gmail-1",
+                        '<a href="https://seekingalpha.com/article/123-aem-update">Read</a>',
+                    )
+                ]
+            )
+            article_session = StateInspectingArticleSession(
+                connection,
+                {
+                    "https://seekingalpha.com/article/123-aem-update": (
+                        "<article><h1>AEM update</h1><p>Margins improved.</p></article>"
+                    )
+                },
+            )
+            dependencies = OrchestratorDependencies(
+                gmail_client=gmail,
+                gmail_actions=gmail,
+                article_session=article_session,
+                analysis_client=FakeAnalysisClient(
+                    {
+                        "relevant_assets": [],
+                        "irrelevant_reason": "No material effect on current holdings.",
+                    }
+                ),
+                telegram_sender=TelegramCapture(),
+            )
+
+            result = run_once(
+                config=self._config(workspace, portfolio_path),
+                dependencies=dependencies,
+                connection=connection,
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertIsNotNone(article_session.status_seen_before_open)
+        self.assertEqual(article_session.status_seen_before_open["status"], "processing")
+        self.assertIn(
+            "Opening article and running LLM analysis",
+            article_session.status_seen_before_open["status_detail"],
+        )
 
     def test_run_once_records_irrelevant_article_without_marking_read(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
