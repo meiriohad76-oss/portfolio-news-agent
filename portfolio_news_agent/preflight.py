@@ -60,14 +60,17 @@ def check_local_setup(
     openai_api_key_present = bool(config.openai_api_key.strip())
     telegram_bot_token_present = bool(config.telegram_bot_token.strip())
     telegram_chat_id_present = bool(config.telegram_chat_id.strip())
+    telegram_ready = (
+        not config.telegram_enabled
+        or (telegram_bot_token_present and telegram_chat_id_present)
+    )
 
     ready_for_gmail_check = gmail_credentials_exists
     ready_for_analyze_url = portfolio_file_exists and openai_api_key_present
     ready_for_full_run = (
         ready_for_gmail_check
         and ready_for_analyze_url
-        and telegram_bot_token_present
-        and telegram_chat_id_present
+        and telegram_ready
     )
 
     blockers = []
@@ -77,9 +80,9 @@ def check_local_setup(
         blockers.append("gmail_credentials_path")
     if not openai_api_key_present:
         blockers.append("OPENAI_API_KEY")
-    if not telegram_bot_token_present:
+    if config.telegram_enabled and not telegram_bot_token_present:
         blockers.append("TELEGRAM_BOT_TOKEN")
-    if not telegram_chat_id_present:
+    if config.telegram_enabled and not telegram_chat_id_present:
         blockers.append("TELEGRAM_CHAT_ID")
 
     return LocalSetupStatus(

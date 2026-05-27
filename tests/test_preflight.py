@@ -111,6 +111,41 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("TELEGRAM_BOT_TOKEN", status.blockers)
         self.assertIn("TELEGRAM_CHAT_ID", status.blockers)
 
+    def test_check_local_setup_does_not_require_telegram_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            portfolio_path.write_text("Symbol,Name\nAAPL,Apple\n", encoding="utf-8")
+            env_path = workspace / ".env"
+            env_path.write_text("OPENAI_API_KEY=test-openai-key", encoding="utf-8")
+            credentials_path = workspace / "data" / "secrets" / "gmail_credentials.json"
+            config_path = workspace / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        f'portfolio_file: "{portfolio_path}"',
+                        'gmail_sender: "account@seekingalpha.com"',
+                        f'database_path: "{workspace / "data" / "portfolio_news.db"}"',
+                        f'browser_profile_dir: "{workspace / "data" / "browser-profile"}"',
+                        f'gmail_credentials_path: "{credentials_path}"',
+                        f'gmail_token_path: "{workspace / "data" / "secrets" / "gmail_token.json"}"',
+                        'openai_model: "gpt-5-nano"',
+                        "telegram_enabled: false",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            credentials_path.parent.mkdir(parents=True)
+            credentials_path.write_text('{"installed": {}}', encoding="utf-8")
+
+            with isolated_preflight_environment():
+                status = check_local_setup(config_path=config_path, env_path=env_path)
+
+        self.assertTrue(status.ready_for_full_run)
+        self.assertEqual(status.blockers, [])
+        self.assertFalse(status.telegram_bot_token_present)
+        self.assertFalse(status.telegram_chat_id_present)
+
 
 if __name__ == "__main__":
     unittest.main()
