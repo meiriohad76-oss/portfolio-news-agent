@@ -120,6 +120,48 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(first_link_id, second_link_id)
         self.assertEqual(tuple(row), ("irrelevant_seen", "No current holding was affected."))
 
+    def test_conflicting_gmail_message_upsert_returns_existing_message_id_after_asset_inserts(self):
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            migrate(connection)
+            import_id = create_portfolio_import(
+                connection,
+                source_path="portfolio.csv",
+                source_hash="hash-1",
+            )
+            message_id = upsert_gmail_message(
+                connection,
+                gmail_message_id="gmail-1",
+                gmail_thread_id="thread-1",
+                sender="account@seekingalpha.com",
+                subject="Article",
+                received_at="2026-05-23T10:00:00Z",
+                status="scanned",
+            )
+            insert_asset(connection, import_id=import_id, symbol="AAPL", name="Apple")
+            insert_asset(connection, import_id=import_id, symbol="MSFT", name="Microsoft")
+
+            existing_message_id = upsert_gmail_message(
+                connection,
+                gmail_message_id="gmail-1",
+                gmail_thread_id="thread-1",
+                sender="account@seekingalpha.com",
+                subject="Article refreshed",
+                received_at="2026-05-23T10:01:00Z",
+                status="scanned",
+            )
+
+            self.assertEqual(existing_message_id, message_id)
+            link_id = upsert_gmail_article_link(
+                connection,
+                gmail_message_id=existing_message_id,
+                portfolio_import_id=import_id,
+                prompt_version="v1",
+                source_url="https://seekingalpha.com/article/1",
+            )
+
+        self.assertGreater(link_id, 0)
+
     def test_run_lifecycle_records_finish_state(self):
         with sqlite3.connect(":memory:") as connection:
             migrate(connection)

@@ -169,7 +169,7 @@ def insert_asset(
     metadata_json: str | None = None,
 ) -> int:
     symbol = symbol.strip().upper()
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO assets (
           import_id, symbol, name, asset_type, sector, industry, priority, price,
@@ -194,8 +194,6 @@ def insert_asset(
         ),
     )
     connection.commit()
-    if cursor.lastrowid:
-        return int(cursor.lastrowid)
     return _fetch_id(
         connection,
         "SELECT id FROM assets WHERE import_id = ? AND symbol = ?",
@@ -215,7 +213,7 @@ def upsert_gmail_message(
     status_detail: str | None = None,
 ) -> int:
     now = _utc_now()
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO gmail_messages (
           gmail_message_id, gmail_thread_id, sender, subject, received_at, status,
@@ -244,8 +242,6 @@ def upsert_gmail_message(
         ),
     )
     connection.commit()
-    if cursor.lastrowid:
-        return int(cursor.lastrowid)
     return _fetch_id(
         connection,
         "SELECT id FROM gmail_messages WHERE gmail_message_id = ?",
@@ -264,7 +260,7 @@ def upsert_article(
     source: str = "Seeking Alpha",
     content_hash: str | None = None,
 ) -> int:
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO articles (
           canonical_url, source_url, headline, author, article_date, source,
@@ -285,8 +281,6 @@ def upsert_article(
         ),
     )
     connection.commit()
-    if cursor.lastrowid:
-        return int(cursor.lastrowid)
     return _fetch_id(
         connection,
         "SELECT id FROM articles WHERE canonical_url = ?",
@@ -307,7 +301,7 @@ def upsert_gmail_article_link(
     status_detail: str | None = None,
 ) -> int:
     now = _utc_now()
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO gmail_article_links (
           gmail_message_id, portfolio_import_id, prompt_version, source_url,
@@ -337,8 +331,6 @@ def upsert_gmail_article_link(
         ),
     )
     connection.commit()
-    if cursor.lastrowid:
-        return int(cursor.lastrowid)
     return _fetch_id(
         connection,
         """
@@ -440,7 +432,7 @@ def insert_article_asset_summary(
     llm_model: str | None = None,
 ) -> int:
     symbol = symbol.strip().upper()
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO article_asset_summaries (
           article_id, gmail_message_id, gmail_article_link_id,
@@ -476,8 +468,6 @@ def insert_article_asset_summary(
         ),
     )
     connection.commit()
-    if cursor.lastrowid:
-        return int(cursor.lastrowid)
     return _fetch_id(
         connection,
         """

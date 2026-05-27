@@ -96,6 +96,7 @@ def run_once(
     if connection is None:
         connection = connect_database(config.database_path)
 
+    run_id: int | None = None
     try:
         run_id = start_run(connection, mode="once")
         portfolio_import = import_portfolio_file(connection, config.portfolio_file)
@@ -184,6 +185,15 @@ def run_once(
             summaries_created=summaries_created,
             failed_links=failed_links,
         )
+    except Exception as exc:
+        if run_id is not None:
+            finish_run(
+                connection,
+                run_id=run_id,
+                status="failed",
+                error=str(exc),
+            )
+        raise
     finally:
         if owns_connection:
             connection.close()

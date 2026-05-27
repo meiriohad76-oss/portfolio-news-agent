@@ -58,6 +58,16 @@ class FailingTelegram:
         raise TelegramSendError("Telegram down")
 
 
+class BrokenGmailIntegration:
+    marked_read = []
+
+    def search_messages(self, query):
+        raise RuntimeError("gmail query failed")
+
+    def get_message(self, message_id):
+        raise AssertionError("get_message should not be called")
+
+
 class OrchestratorTests(unittest.TestCase):
     def test_run_once_processes_relevant_article_and_marks_message_read(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -287,6 +297,34 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.status, "partial_failed")
         self.assertEqual(link_status, "failed_telegram")
         self.assertEqual(gmail.marked_read, [])
+
+    def test_run_once_marks_run_failed_when_scan_crashes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
+            connection = sqlite3.connect(":memory:")
+            migrate(connection)
+
+            with self.assertRaisesRegex(RuntimeError, "gmail query failed"):
+                run_once(
+                    config=self._config(workspace, portfolio_path),
+                    dependencies=OrchestratorDependencies(
+                        gmail_client=BrokenGmailIntegration(),
+                        gmail_actions=BrokenGmailIntegration(),
+                        article_session=FakeArticleSession({}),
+                        analysis_client=FakeAnalysisClient(
+                            {"relevant_assets": [], "irrelevant_reason": None}
+                        ),
+                        telegram_sender=TelegramCapture(),
+                    ),
+                    connection=connection,
+                )
+            run_row = connection.execute(
+                "SELECT status, error, finished_at IS NOT NULL FROM runs"
+            ).fetchone()
+
+        self.assertEqual(tuple(run_row), ("failed", "gmail query failed", 1))
 
     def _config(self, workspace: Path, portfolio_path: Path) -> AppConfig:
         return AppConfig(
