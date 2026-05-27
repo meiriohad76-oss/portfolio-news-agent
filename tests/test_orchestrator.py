@@ -52,6 +52,20 @@ class StateInspectingArticleSession:
         return self.html_by_url[url]
 
 
+class BlockingManualArticleSession:
+    def __init__(self):
+        self.opened = []
+        self.manual_opened = []
+
+    def open(self, url):
+        self.opened.append(url)
+        return "<html>Please sign in to continue</html>"
+
+    def open_for_manual_session(self, url, *, prompt, prompt_message):
+        self.manual_opened.append((url, prompt_message))
+        raise AssertionError("batch article analysis must not prompt per article")
+
+
 class FakeAnalysisClient:
     def __init__(self, response):
         self.response = response
@@ -301,6 +315,43 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(result.status, "partial_failed")
         self.assertEqual(link_status, "failed_extract")
+        self.assertEqual(gmail.marked_read, [])
+
+    def test_run_once_does_not_prompt_for_manual_article_recovery_per_link(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
+            connection = sqlite3.connect(":memory:")
+            migrate(connection)
+            gmail = FakeGmailIntegration(
+                [
+                    self._message(
+                        "gmail-1",
+                        '<a href="https://seekingalpha.com/article/123-aem-update">Read</a>',
+                    )
+                ]
+            )
+            article_session = BlockingManualArticleSession()
+
+            result = run_once(
+                config=self._config(workspace, portfolio_path),
+                dependencies=OrchestratorDependencies(
+                    gmail_client=gmail,
+                    gmail_actions=gmail,
+                    article_session=article_session,
+                    analysis_client=FakeAnalysisClient({"relevant_assets": [], "irrelevant_reason": None}),
+                    telegram_sender=TelegramCapture(),
+                ),
+                connection=connection,
+            )
+            link_row = connection.execute(
+                "SELECT status, status_detail FROM gmail_article_links"
+            ).fetchone()
+
+        self.assertEqual(result.status, "partial_failed")
+        self.assertEqual(tuple(link_row), ("failed_access", "Article access failed: login_required"))
+        self.assertEqual(article_session.manual_opened, [])
         self.assertEqual(gmail.marked_read, [])
 
     def test_run_once_records_failed_telegram_and_leaves_message_unread(self):

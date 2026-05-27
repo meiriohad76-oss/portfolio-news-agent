@@ -216,6 +216,7 @@ def _process_link(
     article = fetch_article_with_session(
         str(link["source_url"]),
         session=dependencies.article_session,
+        allow_manual_recovery=False,
     )
     article_id = upsert_article(
         connection,
