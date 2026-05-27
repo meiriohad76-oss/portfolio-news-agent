@@ -488,7 +488,7 @@ class ArticleBrowserTests(unittest.TestCase):
         self.assertEqual(html, "<article><h1>AEM update</h1><p>Readable.</p></article>")
         self.assertIn(("page_close",), calls)
 
-    def test_cdp_browser_manual_session_raises_access_error_when_prompt_has_no_stdin(self):
+    def test_cdp_browser_manual_session_leaves_tab_open_when_prompt_has_no_stdin(self):
         calls = []
 
         class FakePage:
@@ -527,5 +527,5 @@ class ArticleBrowserTests(unittest.TestCase):
                 prompt_message="Complete challenge.",
             )
 
-        self.assertIn(("page_close",), calls)
+        self.assertNotIn(("page_close",), calls)
         self.assertEqual(calls[-1], ("playwright_stop",))

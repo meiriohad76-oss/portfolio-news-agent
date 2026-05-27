@@ -11,6 +11,7 @@ from portfolio_news_agent.storage import (
     insert_article_asset_summary,
     insert_asset,
     migrate,
+    requeue_retryable_article_links,
     start_run,
     update_gmail_article_link_status,
     upsert_article,
@@ -161,6 +162,63 @@ class StorageTests(unittest.TestCase):
             )
 
         self.assertGreater(link_id, 0)
+
+    def test_requeue_retryable_article_links_resets_failed_access_links(self):
+        with sqlite3.connect(":memory:") as connection:
+            migrate(connection)
+            import_id = create_portfolio_import(
+                connection,
+                source_path="portfolio.csv",
+                source_hash="hash-1",
+            )
+            message_id = upsert_gmail_message(
+                connection,
+                gmail_message_id="gmail-1",
+                gmail_thread_id="thread-1",
+                sender="account@seekingalpha.com",
+                subject="Article",
+                received_at="2026-05-23T10:00:00Z",
+                status="scanned",
+            )
+            retryable_id = upsert_gmail_article_link(
+                connection,
+                gmail_message_id=message_id,
+                portfolio_import_id=import_id,
+                prompt_version="v1",
+                source_url="https://seekingalpha.com/article/retry",
+            )
+            terminal_id = upsert_gmail_article_link(
+                connection,
+                gmail_message_id=message_id,
+                portfolio_import_id=import_id,
+                prompt_version="v1",
+                source_url="https://seekingalpha.com/article/done",
+            )
+            update_gmail_article_link_status(
+                connection,
+                link_id=retryable_id,
+                status="failed_access",
+                status_detail="login_required",
+            )
+            update_gmail_article_link_status(
+                connection,
+                link_id=terminal_id,
+                status="irrelevant_seen",
+            )
+
+            count = requeue_retryable_article_links(connection)
+            rows = connection.execute(
+                "SELECT source_url, status, status_detail FROM gmail_article_links ORDER BY source_url"
+            ).fetchall()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [
+                ("https://seekingalpha.com/article/done", "irrelevant_seen", None),
+                ("https://seekingalpha.com/article/retry", "queued", None),
+            ],
+        )
 
     def test_run_lifecycle_records_finish_state(self):
         with sqlite3.connect(":memory:") as connection:

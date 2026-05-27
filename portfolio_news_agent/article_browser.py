@@ -146,13 +146,19 @@ class CDPArticleBrowser:
             browser = self._connect_browser(playwright)
             context = _default_cdp_context(browser)
             page = context.new_page()
+            should_close_page = True
             try:
                 _goto_for_content(page, url)
-                _prompt_for_manual_action(prompt, prompt_message)
+                try:
+                    _prompt_for_manual_action(prompt, prompt_message)
+                except ArticleAccessError:
+                    should_close_page = False
+                    raise
                 _goto_for_content(page, url)
                 return page.content()
             finally:
-                page.close()
+                if should_close_page:
+                    page.close()
         finally:
             _stop_playwright(playwright)
 

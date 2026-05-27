@@ -192,6 +192,7 @@ class CliTests(unittest.TestCase):
             patch("portfolio_news_agent.cli.start_debug_browser", return_value=launch_result) as start,
             patch("portfolio_news_agent.cli.CDPArticleBrowser", return_value="cdp-session") as cdp,
             patch("portfolio_news_agent.cli.check_seeking_alpha_session", return_value=result) as check,
+            patch("portfolio_news_agent.cli.requeue_retryable_article_links_for_config", return_value=5) as requeue,
         ):
             from portfolio_news_agent.cli import main
 
@@ -203,7 +204,9 @@ class CliTests(unittest.TestCase):
         start.assert_called_once()
         cdp.assert_called_once_with(cdp_url="http://127.0.0.1:9222")
         check.assert_called_once()
+        requeue.assert_called_once_with(config)
         self.assertIn("Seeking Alpha session: state=accessible", output.getvalue())
+        self.assertIn("Requeued 5 previously failed Seeking Alpha article link(s)", output.getvalue())
 
     def test_article_access_error_prints_without_traceback(self):
         from portfolio_news_agent.article_browser import ArticleAccessError
@@ -334,6 +337,74 @@ class CliTests(unittest.TestCase):
         self.assertIn("Run finished: status=success", output.getvalue())
         build_deps.assert_called_once()
         run_once.assert_called_once()
+
+    def test_once_with_cdp_browser_starts_session_and_requeues_failed_access_links(self):
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            browser_cdp_url="http://127.0.0.1:9222",
+            browser_channel="chrome",
+            openai_model="gpt-5-nano",
+            openai_api_key="openai-key-from-dotenv",
+            telegram_enabled=False,
+        )
+        result = type(
+            "Result",
+            (),
+            {
+                "status": "success",
+                "emails_found": 1,
+                "articles_processed": 1,
+                "summaries_created": 1,
+                "failed_links": 0,
+            },
+        )()
+        browser_result = type(
+            "BrowserResult",
+            (),
+            {
+                "status": "already_running",
+                "cdp_url": "http://127.0.0.1:9222",
+                "command": [],
+                "pid": None,
+                "ready": True,
+            },
+        )()
+        sa_result = type(
+            "SaResult",
+            (),
+            {
+                "url": "https://seekingalpha.com",
+                "access_state": "accessible",
+                "headline": "Seeking Alpha",
+                "canonical_url": "https://seekingalpha.com",
+                "body_characters": 1000,
+            },
+        )()
+
+        with (
+            patch("portfolio_news_agent.cli.load_config", return_value=config),
+            patch("portfolio_news_agent.cli.start_debug_browser", return_value=browser_result) as start_browser,
+            patch("portfolio_news_agent.cli.check_seeking_alpha_session", return_value=sa_result) as check_sa,
+            patch("portfolio_news_agent.cli.requeue_retryable_article_links_for_config", return_value=7) as requeue,
+            patch("portfolio_news_agent.cli.build_default_dependencies") as build_deps,
+            patch("portfolio_news_agent.cli.run_once", return_value=result) as run_once,
+        ):
+            from portfolio_news_agent.cli import main
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--once"])
+
+        self.assertEqual(exit_code, 0)
+        start_browser.assert_called_once()
+        check_sa.assert_called_once()
+        requeue.assert_called_once_with(config)
+        build_deps.assert_called_once()
+        run_once.assert_called_once()
+        self.assertIn("Requeued 7 previously failed Seeking Alpha article link(s)", output.getvalue())
 
     def test_check_gmail_loads_config_without_telegram_and_prints_probe_summary(self):
         config = AppConfig(

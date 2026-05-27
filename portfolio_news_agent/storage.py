@@ -362,6 +362,36 @@ def update_gmail_article_link_status(
     connection.commit()
 
 
+def requeue_retryable_article_links(
+    connection: sqlite3.Connection,
+    *,
+    statuses: tuple[str, ...] = ("failed_access",),
+) -> int:
+    if not statuses:
+        return 0
+    placeholders = ", ".join("?" for _ in statuses)
+    count = int(
+        connection.execute(
+            f"SELECT COUNT(*) FROM gmail_article_links WHERE status IN ({placeholders})",
+            statuses,
+        ).fetchone()[0]
+        or 0
+    )
+    if count:
+        connection.execute(
+            f"""
+            UPDATE gmail_article_links
+            SET status = 'queued',
+                status_detail = NULL,
+                last_attempt_at = ?
+            WHERE status IN ({placeholders})
+            """,
+            (_utc_now(), *statuses),
+        )
+        connection.commit()
+    return count
+
+
 def start_run(connection: sqlite3.Connection, *, mode: str) -> int:
     cursor = connection.execute(
         """

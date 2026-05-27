@@ -24,6 +24,7 @@ from portfolio_news_agent.openai_analyzer import OpenAIResponsesClient
 from portfolio_news_agent.openai_analyzer import LLMAnalysisError
 from portfolio_news_agent.orchestrator import build_default_dependencies, run_once
 from portfolio_news_agent.preflight import check_local_setup
+from portfolio_news_agent.storage import connect_database, requeue_retryable_article_links
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
                 session=CDPArticleBrowser(cdp_url=cdp_url),
             )
             _print_seeking_alpha_check(result)
+            if result.access_state == "accessible":
+                _print_requeued_links(requeue_retryable_article_links_for_config(config))
             return 0
 
         if args.check_gmail:
@@ -219,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        _prepare_article_browser_for_run(config)
         result = run_once(
             config=config,
             dependencies=build_default_dependencies(config),
@@ -235,6 +239,37 @@ def main(argv: list[str] | None = None) -> int:
         f"failed_links={result.failed_links}"
     )
     return 0
+
+
+def _prepare_article_browser_for_run(config) -> None:
+    if not config.browser_cdp_url:
+        return
+    cdp_url = _ensure_cdp_browser_started(config)
+    result = check_seeking_alpha_session(
+        DEFAULT_SEEKING_ALPHA_URL,
+        session=CDPArticleBrowser(cdp_url=cdp_url),
+    )
+    _print_seeking_alpha_check(result)
+    if result.access_state != "accessible":
+        raise ArticleAccessError(
+            "Seeking Alpha is not accessible in the dedicated browser session. "
+            "Complete login/challenge in the opened browser, then rerun --once."
+        )
+    requeued = requeue_retryable_article_links_for_config(config)
+    _print_requeued_links(requeued)
+
+
+def requeue_retryable_article_links_for_config(config) -> int:
+    connection = connect_database(config.database_path)
+    try:
+        return requeue_retryable_article_links(connection)
+    finally:
+        connection.close()
+
+
+def _print_requeued_links(count: int) -> None:
+    if count:
+        print(f"Requeued {count} previously failed Seeking Alpha article link(s).")
 
 
 def _print_gmail_check(result) -> None:
