@@ -35,6 +35,7 @@ from portfolio_news_agent.storage import (
     upsert_article,
 )
 from portfolio_news_agent.telegram_sender import (
+    TelegramConfigError,
     TelegramSendError,
     format_telegram_message,
     send_telegram_message,
@@ -153,7 +154,7 @@ def run_once(
                     status="failed_llm",
                     status_detail=str(exc),
                 )
-            except TelegramSendError as exc:
+            except (TelegramConfigError, TelegramSendError) as exc:
                 failed_links += 1
                 update_gmail_article_link_status(
                     connection,
@@ -284,11 +285,12 @@ def _process_link(
             "price_targets_json": json.dumps(summary.get("price_targets", [])),
             "forward_data_json": json.dumps(summary.get("forward_data", [])),
         }
-        dependencies.telegram_sender(
-            bot_token=config.telegram_bot_token,
-            chat_id=config.telegram_chat_id,
-            text=format_telegram_message(telegram_payload),
-        )
+        if config.telegram_enabled:
+            dependencies.telegram_sender(
+                bot_token=config.telegram_bot_token,
+                chat_id=config.telegram_chat_id,
+                text=format_telegram_message(telegram_payload),
+            )
         if summary_id:
             summaries_created += 1
 

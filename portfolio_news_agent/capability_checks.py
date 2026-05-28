@@ -83,11 +83,12 @@ def check_seeking_alpha_session(
     *,
     session: BrowserSession,
     prompt: Callable[[str], None] = input,
+    allow_manual_recovery: bool = True,
 ) -> SeekingAlphaSessionResult:
     html = session.open(url)
     access_state = detect_access_state(html)
     manual_open = getattr(session, "open_for_manual_session", None)
-    if access_state != "accessible" and callable(manual_open):
+    if access_state != "accessible" and allow_manual_recovery and callable(manual_open):
         html = manual_open(
             url,
             prompt=prompt,

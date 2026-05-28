@@ -112,9 +112,11 @@ class CDPArticleBrowser:
         self,
         *,
         cdp_url: str,
+        close_after_read: bool = False,
         playwright_factory: Callable[[], object] | None = None,
     ) -> None:
         self.cdp_url = cdp_url
+        self.close_after_read = close_after_read
         self._playwright_factory = playwright_factory
 
     def open(self, url: str) -> str:
@@ -122,12 +124,13 @@ class CDPArticleBrowser:
         try:
             browser = self._connect_browser(playwright)
             context = _default_cdp_context(browser)
-            page = context.new_page()
+            page = _visible_cdp_page(context)
             try:
                 _goto_for_content(page, url)
                 return page.content()
             finally:
-                page.close()
+                if self.close_after_read:
+                    page.close()
         finally:
             _stop_playwright(playwright)
 
@@ -145,7 +148,7 @@ class CDPArticleBrowser:
         try:
             browser = self._connect_browser(playwright)
             context = _default_cdp_context(browser)
-            page = context.new_page()
+            page = _visible_cdp_page(context)
             should_close_page = True
             try:
                 _goto_for_content(page, url)
@@ -157,7 +160,7 @@ class CDPArticleBrowser:
                 _goto_for_content(page, url)
                 return page.content()
             finally:
-                if should_close_page:
+                if should_close_page and self.close_after_read:
                     page.close()
         finally:
             _stop_playwright(playwright)
@@ -182,6 +185,13 @@ def _default_cdp_context(browser: object) -> object:
     if contexts:
         return contexts[0]
     return browser.new_context()
+
+
+def _visible_cdp_page(context: object) -> object:
+    pages = list(getattr(context, "pages", []) or [])
+    if pages:
+        return pages[-1]
+    return context.new_page()
 
 
 def _stop_playwright(playwright: object) -> None:
@@ -278,6 +288,7 @@ def detect_access_state(html: str) -> AccessState:
             "enable javascript and cookies",
             "ad-blocker enabled",
             "blocked from proceeding",
+            "access to this page has been denied",
             "captcha",
         )
     ):

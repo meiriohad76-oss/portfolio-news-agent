@@ -91,6 +91,10 @@ class ArticleBrowserTests(unittest.TestCase):
             "challenge_required",
         )
         self.assertEqual(
+            detect_access_state("<html><title>Access to this page has been denied</title></html>"),
+            "challenge_required",
+        )
+        self.assertEqual(
             detect_access_state(
                 "<article><h1>AEM update</h1>"
                 "<p>" + ("Readable article text. " * 40) + "</p></article>"
@@ -307,7 +311,7 @@ class ArticleBrowserTests(unittest.TestCase):
         self.assertEqual(html, "<article><h1>AEM update</h1><p>Readable.</p></article>")
         self.assertIn(("close",), calls)
 
-    def test_cdp_browser_opens_article_in_new_tab_and_closes_only_that_tab(self):
+    def test_cdp_browser_reuses_visible_tab_and_keeps_it_open(self):
         calls = []
 
         class FakePage:
@@ -356,8 +360,48 @@ class ArticleBrowserTests(unittest.TestCase):
             ("goto", "https://seekingalpha.com/article/123-aem-update", "domcontentloaded"),
             calls,
         )
-        self.assertIn(("page_close",), calls)
+        self.assertNotIn(("page_close",), calls)
         self.assertEqual(calls[-1], ("playwright_stop",))
+
+    def test_cdp_browser_can_close_tab_when_explicitly_requested(self):
+        calls = []
+
+        class FakePage:
+            def goto(self, url, wait_until):
+                calls.append(("goto", url, wait_until))
+
+            def content(self):
+                return "<article><h1>AEM update</h1><p>Readable.</p></article>"
+
+            def close(self):
+                calls.append(("page_close",))
+
+        class FakeContext:
+            def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            contexts = [FakeContext()]
+
+        class FakeChromium:
+            def connect_over_cdp(self, endpoint_url):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+            def stop(self):
+                calls.append(("playwright_stop",))
+
+        browser = CDPArticleBrowser(
+            cdp_url="http://127.0.0.1:9222",
+            close_after_read=True,
+            playwright_factory=lambda: FakePlaywright(),
+        )
+
+        browser.open("https://seekingalpha.com/article/123-aem-update")
+
+        self.assertIn(("page_close",), calls)
 
     def test_cdp_browser_connection_failure_raises_actionable_access_error(self):
         calls = []
@@ -425,7 +469,7 @@ class ArticleBrowserTests(unittest.TestCase):
 
         self.assertIn("Readable after timeout", html)
         self.assertIn(("content",), calls)
-        self.assertIn(("page_close",), calls)
+        self.assertNotIn(("page_close",), calls)
         self.assertEqual(calls[-1], ("playwright_stop",))
 
     def test_cdp_browser_manual_session_keeps_tab_open_until_prompt_returns(self):
@@ -486,7 +530,7 @@ class ArticleBrowserTests(unittest.TestCase):
             calls,
         )
         self.assertEqual(html, "<article><h1>AEM update</h1><p>Readable.</p></article>")
-        self.assertIn(("page_close",), calls)
+        self.assertNotIn(("page_close",), calls)
 
     def test_cdp_browser_manual_session_leaves_tab_open_when_prompt_has_no_stdin(self):
         calls = []

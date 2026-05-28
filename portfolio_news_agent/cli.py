@@ -248,6 +248,7 @@ def _prepare_article_browser_for_run(config) -> None:
     result = check_seeking_alpha_session(
         DEFAULT_SEEKING_ALPHA_URL,
         session=CDPArticleBrowser(cdp_url=cdp_url),
+        allow_manual_recovery=False,
     )
     _print_seeking_alpha_check(result)
     if result.access_state != "accessible":

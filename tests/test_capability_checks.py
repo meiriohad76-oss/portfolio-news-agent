@@ -131,6 +131,22 @@ class CapabilityCheckTests(unittest.TestCase):
         self.assertEqual(session.manual_calls, [])
         self.assertEqual(prompts, [])
 
+    def test_check_seeking_alpha_session_can_skip_manual_recovery_for_automation(self):
+        session = FakeManualSession("<html>Access to this page has been denied</html>")
+        prompts = []
+
+        result = check_seeking_alpha_session(
+            "https://seekingalpha.com/article/123-aem",
+            session=session,
+            prompt=prompts.append,
+            allow_manual_recovery=False,
+        )
+
+        self.assertEqual(result.access_state, "challenge_required")
+        self.assertEqual(result.body_characters, 0)
+        self.assertEqual(session.manual_calls, [])
+        self.assertEqual(prompts, [])
+
     def test_analyze_url_fetches_article_imports_portfolio_and_returns_analysis(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)

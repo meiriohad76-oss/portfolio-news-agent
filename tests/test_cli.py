@@ -401,6 +401,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         start_browser.assert_called_once()
         check_sa.assert_called_once()
+        self.assertEqual(check_sa.call_args.kwargs["allow_manual_recovery"], False)
         requeue.assert_called_once_with(config)
         build_deps.assert_called_once()
         run_once.assert_called_once()

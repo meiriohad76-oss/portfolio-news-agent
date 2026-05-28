@@ -1,5 +1,6 @@
 import base64
 import csv
+import dataclasses
 import sqlite3
 import tempfile
 import unittest
@@ -414,6 +415,75 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.status, "partial_failed")
         self.assertEqual(link_status, "failed_telegram")
         self.assertEqual(gmail.marked_read, [])
+
+    def test_run_once_skips_telegram_when_disabled_and_processes_article(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
+            connection = sqlite3.connect(":memory:")
+            migrate(connection)
+            gmail = FakeGmailIntegration(
+                [
+                    self._message(
+                        "gmail-1",
+                        '<a href="https://seekingalpha.com/article/123-aem-update">Read</a>',
+                    )
+                ]
+            )
+            config = self._config(workspace, portfolio_path)
+            config = dataclasses.replace(
+                config,
+                telegram_enabled=False,
+                telegram_bot_token="",
+                telegram_chat_id="",
+            )
+
+            result = run_once(
+                config=config,
+                dependencies=OrchestratorDependencies(
+                    gmail_client=gmail,
+                    gmail_actions=gmail,
+                    article_session=FakeArticleSession(
+                        {
+                            "https://seekingalpha.com/article/123-aem-update": (
+                                "<article><h1>AEM update</h1><p>Margins improved.</p></article>"
+                            )
+                        }
+                    ),
+                    analysis_client=FakeAnalysisClient(
+                        {
+                            "relevant_assets": [
+                                {
+                                    "symbol": "AEM",
+                                    "company_name": "Agnico Eagle Mines",
+                                    "theme": "bullish",
+                                    "author_rating": None,
+                                    "quant_rating": None,
+                                    "wall_street_rating": None,
+                                    "inferred_sentiment": "bullish",
+                                    "price_targets": [],
+                                    "forward_data": [],
+                                    "action_relevance": "material_news",
+                                    "short_summary": "Relevant article.",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                            "irrelevant_reason": None,
+                        }
+                    ),
+                    telegram_sender=FailingTelegram(),
+                ),
+                connection=connection,
+            )
+            link_status = connection.execute(
+                "SELECT status FROM gmail_article_links"
+            ).fetchone()["status"]
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.summaries_created, 1)
+        self.assertEqual(link_status, "processed_relevant")
+        self.assertEqual(gmail.marked_read, ["gmail-1"])
 
     def test_run_once_marks_run_failed_when_scan_crashes(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
