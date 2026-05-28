@@ -38,8 +38,11 @@ browser_cdp_url: "http://127.0.0.1:9222"
 gmail_credentials_path: "data/secrets/gmail_credentials.json"
 gmail_token_path: "data/secrets/gmail_token.json"
 openai_model: "gpt-5-nano"
+llm_provider: "local_ollama"
+local_llm_base_url: "http://10.100.102.18:11434"
+local_llm_model: "qwen3.5:4b"
+local_llm_timeout_seconds: 180
 prompt_version: "v2"
-telegram_enabled: true
 mark_relevant_as_read: true
 leave_irrelevant_unread: true
 ```
@@ -48,8 +51,6 @@ Create `.env` from `.env.example`:
 
 ```text
 OPENAI_API_KEY=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
 ```
 
 Keep `.env`, `data/`, Gmail tokens, browser profile data, and SQLite databases out of git.
@@ -60,12 +61,6 @@ Keep `.env`, `data/`, Gmail tokens, browser profile data, and SQLite databases o
 2. Download the OAuth client JSON to `data/secrets/gmail_credentials.json`.
 3. Run the agent once. The first run opens the local OAuth browser flow and writes `data/secrets/gmail_token.json`.
 4. The application requests Gmail modify access so it can search unread messages, read message bodies, and remove the `UNREAD` label only after successful relevant processing.
-
-## Telegram
-
-1. Create a bot with BotFather.
-2. Send a message to the bot from the private chat that should receive alerts.
-3. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`.
 
 ## Seeking Alpha
 
@@ -120,7 +115,7 @@ Start and check the dedicated Seeking Alpha browser. The second command will sta
 .\.venv\Scripts\python run_agent.py --check-sa-browser
 ```
 
-Open and analyze one article against the portfolio without sending Telegram messages or marking Gmail read:
+Open and analyze one article against the portfolio without marking Gmail read:
 
 ```bash
 .\.venv\Scripts\python run_agent.py --analyze-url "https://seekingalpha.com/article/example"
@@ -136,7 +131,7 @@ Open and analyze one article against the portfolio without sending Telegram mess
 
 - Manual one-shot run only.
 - No scheduler.
-- No local LLM fallback.
+- Local LLM analysis is supported through Ollama/Open WebUI-compatible local model configuration.
 - No cloud deployment.
 - No watchlist support.
 - No trading recommendations.

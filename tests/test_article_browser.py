@@ -105,6 +105,18 @@ class ArticleBrowserTests(unittest.TestCase):
         )
         self.assertEqual(
             detect_access_state(
+                "<article><h1>Nvidia, Micron set to power S&P earnings growth</h1>"
+                "<p>Artificial intelligence infrastructure spending is expected to drive "
+                "a large share of earnings growth over the next two years, according to "
+                "Goldman Sachs research. The report names Nvidia and Micron as direct "
+                "beneficiaries.</p></article>"
+                "<footer>Please enable Javascript and cookies. "
+                "If you have an ad-blocker enabled you may be blocked from proceeding.</footer>"
+            ),
+            "accessible",
+        )
+        self.assertEqual(
+            detect_access_state(
                 "<html>Please enable Javascript and cookies. "
                 "If you have an ad-blocker enabled you may be blocked from proceeding.</html>"
             ),
@@ -170,6 +182,59 @@ class ArticleBrowserTests(unittest.TestCase):
             ],
         )
         self.assertEqual(prompt.messages, [])
+
+    def test_fetch_noninteractive_mode_retries_once_then_fails_without_prompt(self):
+        class ManualSession:
+            def __init__(self):
+                self.calls = []
+
+            def open(self, url):
+                self.calls.append(("open", url))
+                return "<html>Access to this page has been denied</html>"
+
+            def open_for_manual_session(self, url, *, prompt, prompt_message):
+                self.calls.append(("manual", url, prompt_message))
+                raise AssertionError("batch mode must not pause for per-article prompts")
+
+        session = ManualSession()
+        prompt = FakePrompt()
+
+        with self.assertRaisesRegex(ArticleAccessError, "challenge_required"):
+            fetch_article_with_session(
+                "https://seekingalpha.com/news/1",
+                session=session,
+                prompt=prompt,
+                allow_manual_recovery=False,
+            )
+
+        self.assertEqual(
+            session.calls,
+            [
+                ("open", "https://seekingalpha.com/news/1"),
+                ("open", "https://seekingalpha.com/news/1"),
+            ],
+        )
+        self.assertEqual(prompt.messages, [])
+
+    def test_fetch_noninteractive_mode_accepts_same_session_retry_success(self):
+        session = FakeBrowserSession(
+            [
+                "<html>Access to this page has been denied</html>",
+                "<article><h1>AEM update</h1><p>Readable after retry.</p></article>",
+            ]
+        )
+
+        article = fetch_article_with_session(
+            "https://seekingalpha.com/news/1",
+            session=session,
+            allow_manual_recovery=False,
+        )
+
+        self.assertEqual(article.headline, "AEM update")
+        self.assertEqual(
+            session.opened_urls,
+            ["https://seekingalpha.com/news/1", "https://seekingalpha.com/news/1"],
+        )
 
     def test_fetch_uses_manual_session_when_browser_can_hold_login_window(self):
         class ManualSession:

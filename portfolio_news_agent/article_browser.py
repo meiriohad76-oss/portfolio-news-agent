@@ -10,6 +10,7 @@ from typing import Callable, Literal, Protocol
 
 AccessState = Literal["accessible", "login_required", "challenge_required"]
 NAVIGATION_TIMEOUT_MS = 15_000
+READABLE_ARTICLE_MIN_CHARS = 120
 
 
 class BrowserSession(Protocol):
@@ -252,10 +253,10 @@ def fetch_article_with_session(
     html = session.open(url)
     state = detect_access_state(html)
     if state != "accessible":
-        if not allow_manual_recovery:
-            raise ArticleAccessError(f"Article access failed: {state}")
         html = session.open(url)
         state = detect_access_state(html)
+    if state != "accessible" and not allow_manual_recovery:
+        raise ArticleAccessError(f"Article access failed: {state}")
     if state != "accessible":
         prompt_message = _manual_prompt_for_state(state)
         manual_open = getattr(session, "open_for_manual_session", None)
@@ -347,7 +348,7 @@ def _has_readable_article(html: str) -> bool:
     if not (parser.headline or parser.title):
         return False
     body_text = _normalize_text("\n".join(parser.article_text_parts))
-    return len(body_text) >= 500
+    return len(body_text) >= READABLE_ARTICLE_MIN_CHARS
 
 
 def _normalize_text(text: str) -> str:

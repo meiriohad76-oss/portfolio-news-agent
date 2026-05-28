@@ -5,7 +5,8 @@ Run this checklist with real credentials, a current portfolio file, and at least
 ## Preflight
 
 - `config.yaml` points at the current portfolio workbook.
-- `.env` contains OpenAI and Telegram values.
+- `.env` contains the configured LLM values. For the local Pi model, `config.yaml`
+  should set `llm_provider: "local_ollama"` and point at the Pi Ollama endpoint.
 - `data/secrets/gmail_credentials.json` exists.
 - Dependencies are installed.
 - Chromium is installed for Playwright.
@@ -37,7 +38,7 @@ Full run:
 - `--check-gmail` completes OAuth when needed and prints unread Seeking Alpha message previews.
 - `--start-browser` starts a visible Chrome/Edge browser using the configured dedicated profile and CDP endpoint.
 - `--check-sa-browser` opens a tab in that running browser, prompts only if login/challenge completion is needed, then reports the access state.
-- `--analyze-url` imports the portfolio, opens the article, and prints the structured relevant/irrelevant result without Telegram or Gmail mark-read side effects.
+- `--analyze-url` imports the portfolio, opens the article, and prints the structured relevant/irrelevant result without Gmail mark-read side effects.
 - Portfolio import creates one `portfolio_imports` row.
 - Current holdings appear in `assets`.
 - Gmail scan uses `from:account@seekingalpha.com is:unread`.
@@ -45,9 +46,8 @@ Full run:
 - Browser opens visibly and uses `data/sa-browser-profile`.
 - A normal hand-opened Chrome window is not treated as attachable unless it was started with remote debugging.
 - After manual Seeking Alpha login in the dedicated browser, article tabs open and close without requiring a new login for every email.
-- OpenAI returns valid structured JSON.
+- The configured LLM returns valid structured JSON.
 - Relevant article-stock rows appear in `article_asset_summaries`.
-- Telegram receives one message per relevant holding.
 - A relevant Gmail message is marked read only after every extracted link reaches an acceptable terminal state.
 - Irrelevant-only messages remain unread and their links are `irrelevant_seen`.
 - Failed links remain unread and store a failure status.
