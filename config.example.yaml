@@ -7,6 +7,10 @@ browser_cdp_url: "http://127.0.0.1:9222"
 gmail_credentials_path: "data/secrets/gmail_credentials.json"
 gmail_token_path: "data/secrets/gmail_token.json"
 openai_model: "gpt-5-nano"
+llm_provider: "local_ollama"
+local_llm_base_url: "http://10.100.102.18:11434"
+local_llm_model: "qwen3.5:4b"
+local_llm_timeout_seconds: 180
 prompt_version: "v2"
 mark_relevant_as_read: true
 leave_irrelevant_unread: true

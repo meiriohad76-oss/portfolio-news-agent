@@ -119,6 +119,7 @@ class ArticleBrowserTests(unittest.TestCase):
         session = FakeBrowserSession(
             [
                 "<html>Please sign in to continue</html>",
+                "<html>Please sign in to continue</html>",
                 "<article><h1>AEM update</h1><p>Readable article text.</p></article>",
             ]
         )
@@ -130,9 +131,45 @@ class ArticleBrowserTests(unittest.TestCase):
             prompt=prompt,
         )
 
-        self.assertEqual(len(session.opened_urls), 2)
+        self.assertEqual(len(session.opened_urls), 3)
         self.assertIn("log in", prompt.messages[0])
         self.assertEqual(article.headline, "AEM update")
+
+    def test_fetch_retries_same_session_before_manual_recovery(self):
+        class ManualSession:
+            def __init__(self):
+                self.calls = []
+
+            def open(self, url):
+                self.calls.append(("open", url))
+                if len([call for call in self.calls if call[0] == "open"]) == 1:
+                    return "<html>Access to this page has been denied</html>"
+                return "<article><h1>AEM update</h1><p>Readable after retry.</p></article>"
+
+            def open_for_manual_session(self, url, *, prompt, prompt_message):
+                self.calls.append(("manual", url, prompt_message))
+                raise AssertionError(
+                    "manual recovery should not run after same-session retry succeeds"
+                )
+
+        session = ManualSession()
+        prompt = FakePrompt()
+
+        article = fetch_article_with_session(
+            "https://seekingalpha.com/news/1",
+            session=session,
+            prompt=prompt,
+        )
+
+        self.assertEqual(article.headline, "AEM update")
+        self.assertEqual(
+            session.calls,
+            [
+                ("open", "https://seekingalpha.com/news/1"),
+                ("open", "https://seekingalpha.com/news/1"),
+            ],
+        )
+        self.assertEqual(prompt.messages, [])
 
     def test_fetch_uses_manual_session_when_browser_can_hold_login_window(self):
         class ManualSession:
@@ -159,12 +196,14 @@ class ArticleBrowserTests(unittest.TestCase):
 
         self.assertEqual(article.headline, "AEM update")
         self.assertEqual(session.calls[0][0], "open")
-        self.assertEqual(session.calls[1][0], "manual")
+        self.assertEqual(session.calls[1][0], "open")
+        self.assertEqual(session.calls[2][0], "manual")
         self.assertIn("log in", prompt.messages[0])
 
     def test_fetch_fails_when_access_still_blocked_after_prompt(self):
         session = FakeBrowserSession(
             [
+                "<html>Please sign in to continue</html>",
                 "<html>Please sign in to continue</html>",
                 "<html>Please sign in to continue</html>",
             ]

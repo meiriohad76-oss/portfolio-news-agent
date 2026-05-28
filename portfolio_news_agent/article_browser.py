@@ -254,6 +254,9 @@ def fetch_article_with_session(
     if state != "accessible":
         if not allow_manual_recovery:
             raise ArticleAccessError(f"Article access failed: {state}")
+        html = session.open(url)
+        state = detect_access_state(html)
+    if state != "accessible":
         prompt_message = _manual_prompt_for_state(state)
         manual_open = getattr(session, "open_for_manual_session", None)
         if callable(manual_open):

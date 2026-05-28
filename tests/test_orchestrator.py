@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 
 from portfolio_news_agent.config import AppConfig
-from portfolio_news_agent.orchestrator import OrchestratorDependencies, run_once
+from portfolio_news_agent.orchestrator import (
+    OrchestratorDependencies,
+    build_analysis_client,
+    run_once,
+)
 from portfolio_news_agent.storage import migrate
 
 
@@ -84,6 +88,23 @@ class BrokenGmailIntegration:
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_build_analysis_client_uses_local_ollama_when_configured(self):
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            openai_model="gpt-5-nano",
+            llm_provider="local_ollama",
+            local_llm_base_url="http://10.100.102.18:11434",
+            local_llm_model="qwen3.5:4b",
+        )
+
+        client = build_analysis_client(config)
+
+        self.assertEqual(client.__class__.__name__, "OllamaChatClient")
+        self.assertEqual(client.base_url, "http://10.100.102.18:11434")
+
     def test_run_once_processes_relevant_article_and_marks_message_read(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
