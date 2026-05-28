@@ -14,8 +14,7 @@ class LocalSetupStatus:
     gmail_credentials_exists: bool
     gmail_token_exists: bool
     openai_api_key_present: bool
-    telegram_bot_token_present: bool
-    telegram_chat_id_present: bool
+    local_llm_present: bool
     ready_for_gmail_check: bool
     ready_for_analyze_url: bool
     ready_for_full_run: bool
@@ -44,7 +43,6 @@ def check_local_setup(
             config_path=config_file,
             env_path=env_file,
             require_openai=False,
-            require_telegram=False,
         )
     except ConfigError as exc:
         return _blocked_status(
@@ -58,19 +56,18 @@ def check_local_setup(
     gmail_credentials_exists = config.gmail_credentials_path.exists()
     gmail_token_exists = config.gmail_token_path.exists()
     openai_api_key_present = bool(config.openai_api_key.strip())
-    telegram_bot_token_present = bool(config.telegram_bot_token.strip())
-    telegram_chat_id_present = bool(config.telegram_chat_id.strip())
-    telegram_ready = (
-        not config.telegram_enabled
-        or (telegram_bot_token_present and telegram_chat_id_present)
+    local_llm_present = bool(config.local_llm_base_url.strip() and config.local_llm_model.strip())
+    llm_ready = (
+        openai_api_key_present
+        if config.llm_provider == "openai"
+        else local_llm_present
     )
 
     ready_for_gmail_check = gmail_credentials_exists
-    ready_for_analyze_url = portfolio_file_exists and openai_api_key_present
+    ready_for_analyze_url = portfolio_file_exists and llm_ready
     ready_for_full_run = (
         ready_for_gmail_check
         and ready_for_analyze_url
-        and telegram_ready
     )
 
     blockers = []
@@ -78,12 +75,12 @@ def check_local_setup(
         blockers.append("portfolio_file")
     if not gmail_credentials_exists:
         blockers.append("gmail_credentials_path")
-    if not openai_api_key_present:
+    if config.llm_provider == "openai" and not openai_api_key_present:
         blockers.append("OPENAI_API_KEY")
-    if config.telegram_enabled and not telegram_bot_token_present:
-        blockers.append("TELEGRAM_BOT_TOKEN")
-    if config.telegram_enabled and not telegram_chat_id_present:
-        blockers.append("TELEGRAM_CHAT_ID")
+    if config.llm_provider == "local_ollama" and not config.local_llm_base_url.strip():
+        blockers.append("AGENCY_LOCAL_LLM_BASE_URL")
+    if config.llm_provider == "local_ollama" and not config.local_llm_model.strip():
+        blockers.append("AGENCY_LOCAL_LLM_MODEL")
 
     return LocalSetupStatus(
         config_file_exists=True,
@@ -92,8 +89,7 @@ def check_local_setup(
         gmail_credentials_exists=gmail_credentials_exists,
         gmail_token_exists=gmail_token_exists,
         openai_api_key_present=openai_api_key_present,
-        telegram_bot_token_present=telegram_bot_token_present,
-        telegram_chat_id_present=telegram_chat_id_present,
+        local_llm_present=local_llm_present,
         ready_for_gmail_check=ready_for_gmail_check,
         ready_for_analyze_url=ready_for_analyze_url,
         ready_for_full_run=ready_for_full_run,
@@ -115,8 +111,7 @@ def _blocked_status(
         gmail_credentials_exists=False,
         gmail_token_exists=False,
         openai_api_key_present=False,
-        telegram_bot_token_present=False,
-        telegram_chat_id_present=False,
+        local_llm_present=False,
         ready_for_gmail_check=False,
         ready_for_analyze_url=False,
         ready_for_full_run=False,

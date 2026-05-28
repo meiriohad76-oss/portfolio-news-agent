@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from portfolio_news_agent.article_browser import (
     ArticleAccessError,
@@ -20,6 +20,7 @@ from portfolio_news_agent.gmail_scanner import GmailClient, scan_unread_seeking_
 from portfolio_news_agent.openai_analyzer import (
     AnalysisClient,
     LLMAnalysisError,
+    OllamaChatClient,
     OpenAIResponsesClient,
     analyze_article,
 )
@@ -34,24 +35,12 @@ from portfolio_news_agent.storage import (
     update_gmail_article_link_status,
     upsert_article,
 )
-from portfolio_news_agent.telegram_sender import (
-    TelegramConfigError,
-    TelegramSendError,
-    format_telegram_message,
-    send_telegram_message,
-)
-
-
-TelegramSender = Callable[..., dict[str, Any]]
-
-
 @dataclass(frozen=True)
 class OrchestratorDependencies:
     gmail_client: GmailClient
     gmail_actions: GmailActions
     article_session: BrowserSession
     analysis_client: AnalysisClient
-    telegram_sender: TelegramSender = send_telegram_message
 
 
 @dataclass(frozen=True)
@@ -73,8 +62,17 @@ def build_default_dependencies(config: AppConfig) -> OrchestratorDependencies:
         gmail_client=gmail_client,
         gmail_actions=gmail_client,
         article_session=build_article_session(config),
-        analysis_client=OpenAIResponsesClient(api_key=config.openai_api_key),
+        analysis_client=build_analysis_client(config),
     )
+
+
+def build_analysis_client(config: AppConfig) -> AnalysisClient:
+    if config.llm_provider == "local_ollama":
+        return OllamaChatClient(
+            base_url=config.local_llm_base_url,
+            timeout_seconds=config.local_llm_timeout_seconds,
+        )
+    return OpenAIResponsesClient(api_key=config.openai_api_key)
 
 
 def build_article_session(config: AppConfig) -> BrowserSession:
@@ -157,14 +155,6 @@ def run_once(
                     status="failed_llm",
                     status_detail=str(exc),
                 )
-            except (TelegramConfigError, TelegramSendError) as exc:
-                failed_links += 1
-                update_gmail_article_link_status(
-                    connection,
-                    link_id=int(link["id"]),
-                    status="failed_telegram",
-                    status_detail=str(exc),
-                )
             except Exception as exc:
                 failed_links += 1
                 update_gmail_article_link_status(
@@ -220,7 +210,7 @@ def _process_link(
     article = fetch_article_with_session(
         str(link["source_url"]),
         session=dependencies.article_session,
-        allow_manual_recovery=False,
+        allow_manual_recovery=True,
     )
     article_id = upsert_article(
         connection,
@@ -232,7 +222,7 @@ def _process_link(
     )
     analysis = analyze_article(
         client=dependencies.analysis_client,
-        model=config.openai_model,
+        model=config.analysis_model,
         article={
             "headline": article.headline,
             "author": article.author,
@@ -278,22 +268,9 @@ def _process_link(
             action_relevance=summary["action_relevance"],
             short_summary=summary["short_summary"],
             confidence=summary.get("confidence"),
-            llm_model=config.openai_model,
+            llm_model=config.analysis_model,
             prompt_version=config.prompt_version,
         )
-        telegram_payload = {
-            **summary,
-            "headline": article.headline,
-            "source_url": article.source_url,
-            "price_targets_json": json.dumps(summary.get("price_targets", [])),
-            "forward_data_json": json.dumps(summary.get("forward_data", [])),
-        }
-        if config.telegram_enabled:
-            dependencies.telegram_sender(
-                bot_token=config.telegram_bot_token,
-                chat_id=config.telegram_chat_id,
-                text=format_telegram_message(telegram_payload),
-            )
         if summary_id:
             summaries_created += 1
 

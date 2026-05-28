@@ -140,7 +140,7 @@ def analyze_url_against_portfolio(
         article = fetch_article_with_session(url, session=article_session, prompt=prompt)
         analysis = analyze_article(
             client=analysis_client,
-            model=config.openai_model,
+            model=config.analysis_model,
             article={
                 "headline": article.headline,
                 "author": article.author,

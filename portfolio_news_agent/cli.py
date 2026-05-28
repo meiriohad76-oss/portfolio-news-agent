@@ -29,9 +29,8 @@ from portfolio_news_agent.config import ConfigError, load_config
 from portfolio_news_agent.gmail_api import GmailApiClient, GmailSetupError, build_gmail_service
 from portfolio_news_agent.local_setup import initialize_local_setup
 from portfolio_news_agent.logging_setup import configure_logging
-from portfolio_news_agent.openai_analyzer import OpenAIResponsesClient
 from portfolio_news_agent.openai_analyzer import LLMAnalysisError
-from portfolio_news_agent.orchestrator import build_default_dependencies, run_once
+from portfolio_news_agent.orchestrator import build_analysis_client, build_default_dependencies, run_once
 from portfolio_news_agent.preflight import check_local_setup
 from portfolio_news_agent.storage import connect_database, requeue_retryable_article_links
 
@@ -166,7 +165,6 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=Path(args.config),
                 env_path=Path(args.env_file),
                 require_openai=False,
-                require_telegram=False,
             )
             result = start_debug_browser(
                 profile_dir=config.browser_profile_dir,
@@ -181,7 +179,6 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=Path(args.config),
                 env_path=Path(args.env_file),
                 require_openai=False,
-                require_telegram=False,
             )
             cdp_url = _ensure_cdp_browser_started(config)
             result = check_seeking_alpha_session(
@@ -198,7 +195,6 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=Path(args.config),
                 env_path=Path(args.env_file),
                 require_openai=False,
-                require_telegram=False,
             )
             gmail_service = build_gmail_service(
                 credentials_path=config.gmail_credentials_path,
@@ -216,7 +212,6 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=Path(args.config),
                 env_path=Path(args.env_file),
                 require_openai=False,
-                require_telegram=False,
             )
             result = check_seeking_alpha_session(
                 args.open_sa,
@@ -230,13 +225,12 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=Path(args.config),
                 env_path=Path(args.env_file),
                 require_openai=True,
-                require_telegram=False,
             )
             result = analyze_url_against_portfolio(
                 config=config,
                 url=args.analyze_url,
                 article_session=_article_session_for_config(config),
-                analysis_client=OpenAIResponsesClient(api_key=config.openai_api_key),
+                analysis_client=build_analysis_client(config),
             )
             _print_analyze_url_result(result)
             return 0
@@ -368,8 +362,7 @@ def _print_preflight(status) -> None:
     print(f"- gmail_credentials.json: {_exists_label(status.gmail_credentials_exists)}")
     print(f"- gmail_token.json: {_exists_label(status.gmail_token_exists)}")
     print(f"- OPENAI_API_KEY: {_present_label(status.openai_api_key_present)}")
-    print(f"- TELEGRAM_BOT_TOKEN: {_present_label(status.telegram_bot_token_present)}")
-    print(f"- TELEGRAM_CHAT_ID: {_present_label(status.telegram_chat_id_present)}")
+    print(f"- local LLM: {_present_label(status.local_llm_present)}")
     config_error = getattr(status, "config_error", None)
     if config_error:
         print(f"Config error: {config_error}")

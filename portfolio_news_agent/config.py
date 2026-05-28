@@ -17,18 +17,25 @@ class AppConfig:
     database_path: Path
     browser_profile_dir: Path
     openai_model: str
+    llm_provider: str = "openai"
+    local_llm_base_url: str = ""
+    local_llm_model: str = ""
+    local_llm_timeout_seconds: float = 180.0
     browser_channel: str | None = None
     browser_cdp_url: str | None = None
     gmail_credentials_path: Path = Path("data/secrets/gmail_credentials.json")
     gmail_token_path: Path = Path("data/secrets/gmail_token.json")
     prompt_version: str = "v2"
-    telegram_enabled: bool = True
     mark_relevant_as_read: bool = True
     leave_irrelevant_unread: bool = True
     commodity_exposure_overrides: dict[str, list[str]] = field(default_factory=dict)
     openai_api_key: str = ""
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+
+    @property
+    def analysis_model(self) -> str:
+        if self.llm_provider == "local_ollama":
+            return self.local_llm_model
+        return self.openai_model
 
 
 _REQUIRED_CONFIG_KEYS = (
@@ -45,7 +52,6 @@ def load_config(
     env_path: str | Path = ".env",
     *,
     require_openai: bool = True,
-    require_telegram: bool | None = None,
 ) -> AppConfig:
     config_file = Path(config_path)
     if not config_file.exists():
@@ -58,21 +64,38 @@ def load_config(
 
     env_values = _read_env_file(Path(env_path))
 
+    llm_provider = _as_llm_provider(raw_config.get("llm_provider", "openai"))
     openai_api_key = _secret_value("OPENAI_API_KEY", env_values)
-    telegram_bot_token = _secret_value("TELEGRAM_BOT_TOKEN", env_values)
-    telegram_chat_id = _secret_value("TELEGRAM_CHAT_ID", env_values)
-
-    telegram_enabled = _as_bool(raw_config.get("telegram_enabled", True))
-    if require_telegram is None:
-        require_telegram = telegram_enabled
+    local_llm_base_url = _config_or_env(
+        raw_config,
+        env_values,
+        key="local_llm_base_url",
+        env_name="AGENCY_LOCAL_LLM_BASE_URL",
+    )
+    local_llm_model = _config_or_env(
+        raw_config,
+        env_values,
+        key="local_llm_model",
+        env_name="AGENCY_LOCAL_LLM_MODEL",
+    )
+    local_llm_timeout_seconds = _as_float(
+        _config_or_env(
+            raw_config,
+            env_values,
+            key="local_llm_timeout_seconds",
+            env_name="AGENCY_LOCAL_LLM_TIMEOUT_SECONDS",
+            default="180",
+        ),
+        field_name="local_llm_timeout_seconds",
+    )
 
     missing_secrets = []
-    if require_openai and _is_blank(openai_api_key):
+    if require_openai and llm_provider == "openai" and _is_blank(openai_api_key):
         missing_secrets.append("OPENAI_API_KEY")
-    if require_telegram and _is_blank(telegram_bot_token):
-        missing_secrets.append("TELEGRAM_BOT_TOKEN")
-    if require_telegram and _is_blank(telegram_chat_id):
-        missing_secrets.append("TELEGRAM_CHAT_ID")
+    if require_openai and llm_provider == "local_ollama" and _is_blank(local_llm_base_url):
+        missing_secrets.append("AGENCY_LOCAL_LLM_BASE_URL")
+    if require_openai and llm_provider == "local_ollama" and _is_blank(local_llm_model):
+        missing_secrets.append("AGENCY_LOCAL_LLM_MODEL")
     if missing_secrets:
         raise ConfigError("Missing required environment values: " + ", ".join(missing_secrets))
 
@@ -96,16 +119,17 @@ def load_config(
         gmail_credentials_path=gmail_credentials_path,
         gmail_token_path=gmail_token_path,
         openai_model=str(raw_config["openai_model"]),
+        llm_provider=llm_provider,
+        local_llm_base_url=local_llm_base_url,
+        local_llm_model=local_llm_model,
+        local_llm_timeout_seconds=local_llm_timeout_seconds,
         prompt_version=str(raw_config.get("prompt_version", "v2")),
-        telegram_enabled=telegram_enabled,
         mark_relevant_as_read=_as_bool(raw_config.get("mark_relevant_as_read", True)),
         leave_irrelevant_unread=_as_bool(raw_config.get("leave_irrelevant_unread", True)),
         commodity_exposure_overrides=_as_string_lists(
             raw_config.get("commodity_exposure_overrides", {})
         ),
         openai_api_key=openai_api_key,
-        telegram_bot_token=telegram_bot_token,
-        telegram_chat_id=telegram_chat_id,
     )
 
 
@@ -122,6 +146,26 @@ def _secret_value(name: str, env_values: dict[str, str]) -> str:
     if value is not None:
         return value
     return env_file_value or ""
+
+
+def _config_or_env(
+    raw_config: dict[str, Any],
+    env_values: dict[str, str],
+    *,
+    key: str,
+    env_name: str,
+    default: str = "",
+) -> str:
+    value = raw_config.get(key)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    env_file_value = env_values.get(env_name)
+    if env_file_value is not None and env_file_value.strip():
+        return env_file_value.strip()
+    env_value = os.environ.get(env_name)
+    if env_value is not None and env_value.strip():
+        return env_value.strip()
+    return default
 
 
 def _read_env_file(env_path: Path) -> dict[str, str]:
@@ -208,6 +252,23 @@ def _as_bool(value: Any) -> bool:
         if lowered in {"false", "0", "no", "off"}:
             return False
     raise ConfigError(f"Expected boolean config value, got {value!r}")
+
+
+def _as_float(value: Any, *, field_name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"Expected numeric config value for {field_name}, got {value!r}") from exc
+    if result <= 0:
+        raise ConfigError(f"{field_name} must be greater than 0")
+    return result
+
+
+def _as_llm_provider(value: Any) -> str:
+    provider = str(value or "openai").strip().lower()
+    if provider not in {"openai", "local_ollama"}:
+        raise ConfigError("llm_provider must be one of: openai, local_ollama")
+    return provider
 
 
 def _as_string_lists(value: Any) -> dict[str, list[str]]:

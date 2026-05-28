@@ -50,7 +50,6 @@ def initialize_local_setup(
                 config_path=config_file,
                 env_path=env_file,
                 require_openai=False,
-                require_telegram=False,
             )
             _ensure_directory(config.gmail_credentials_path.parent, created, existing)
             _ensure_directory(config.gmail_token_path.parent, created, existing)

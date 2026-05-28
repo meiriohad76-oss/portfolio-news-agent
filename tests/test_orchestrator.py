@@ -1,6 +1,5 @@
 import base64
 import csv
-import dataclasses
 import sqlite3
 import tempfile
 import unittest
@@ -9,7 +8,6 @@ from pathlib import Path
 from portfolio_news_agent.config import AppConfig
 from portfolio_news_agent.orchestrator import OrchestratorDependencies, run_once
 from portfolio_news_agent.storage import migrate
-from portfolio_news_agent.telegram_sender import TelegramSendError
 
 
 class FakeGmailIntegration:
@@ -53,7 +51,7 @@ class StateInspectingArticleSession:
         return self.html_by_url[url]
 
 
-class BlockingManualArticleSession:
+class RecoveringManualArticleSession:
     def __init__(self):
         self.opened = []
         self.manual_opened = []
@@ -64,7 +62,7 @@ class BlockingManualArticleSession:
 
     def open_for_manual_session(self, url, *, prompt, prompt_message):
         self.manual_opened.append((url, prompt_message))
-        raise AssertionError("batch article analysis must not prompt per article")
+        return "<article><h1>AEM update</h1><p>AEM margins improved after login.</p></article>"
 
 
 class FakeAnalysisClient:
@@ -73,20 +71,6 @@ class FakeAnalysisClient:
 
     def create_structured_response(self, *, model, messages, schema):
         return self.response
-
-
-class TelegramCapture:
-    def __init__(self):
-        self.messages = []
-
-    def __call__(self, *, bot_token, chat_id, text):
-        self.messages.append({"bot_token": bot_token, "chat_id": chat_id, "text": text})
-        return {"ok": True}
-
-
-class FailingTelegram:
-    def __call__(self, *, bot_token, chat_id, text):
-        raise TelegramSendError("Telegram down")
 
 
 class BrokenGmailIntegration:
@@ -124,7 +108,6 @@ class OrchestratorTests(unittest.TestCase):
                     )
                 }
             )
-            telegram = TelegramCapture()
             dependencies = OrchestratorDependencies(
                 gmail_client=gmail,
                 gmail_actions=gmail,
@@ -150,7 +133,6 @@ class OrchestratorTests(unittest.TestCase):
                         "irrelevant_reason": None,
                     }
                 ),
-                telegram_sender=telegram,
             )
 
             result = run_once(
@@ -174,8 +156,6 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(link_status, "processed_relevant")
         self.assertEqual(message_status, "processed_relevant")
         self.assertEqual(gmail.marked_read, ["gmail-1"])
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("AEM - bullish - material_news", telegram.messages[0]["text"])
 
     def test_run_once_marks_article_link_processing_before_opening_browser(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -210,7 +190,6 @@ class OrchestratorTests(unittest.TestCase):
                         "irrelevant_reason": "No material effect on current holdings.",
                     }
                 ),
-                telegram_sender=TelegramCapture(),
             )
 
             result = run_once(
@@ -258,7 +237,6 @@ class OrchestratorTests(unittest.TestCase):
                         "irrelevant_reason": "No material effect on current holdings.",
                     }
                 ),
-                telegram_sender=TelegramCapture(),
             )
 
             result = run_once(
@@ -306,7 +284,6 @@ class OrchestratorTests(unittest.TestCase):
                     gmail_actions=gmail,
                     article_session=BrokenArticleSession(),
                     analysis_client=FakeAnalysisClient({"relevant_assets": [], "irrelevant_reason": None}),
-                    telegram_sender=TelegramCapture(),
                 ),
                 connection=connection,
             )
@@ -318,7 +295,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(link_status, "failed_extract")
         self.assertEqual(gmail.marked_read, [])
 
-    def test_run_once_does_not_prompt_for_manual_article_recovery_per_link(self):
+    def test_run_once_recovers_login_required_article_before_marking_failed(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)
             portfolio_path = workspace / "portfolio.csv"
@@ -333,7 +310,7 @@ class OrchestratorTests(unittest.TestCase):
                     )
                 ]
             )
-            article_session = BlockingManualArticleSession()
+            article_session = RecoveringManualArticleSession()
 
             result = run_once(
                 config=self._config(workspace, portfolio_path),
@@ -341,8 +318,12 @@ class OrchestratorTests(unittest.TestCase):
                     gmail_client=gmail,
                     gmail_actions=gmail,
                     article_session=article_session,
-                    analysis_client=FakeAnalysisClient({"relevant_assets": [], "irrelevant_reason": None}),
-                    telegram_sender=TelegramCapture(),
+                    analysis_client=FakeAnalysisClient(
+                        {
+                            "relevant_assets": [],
+                            "irrelevant_reason": "No material effect on current holdings.",
+                        }
+                    ),
                 ),
                 connection=connection,
             )
@@ -350,140 +331,11 @@ class OrchestratorTests(unittest.TestCase):
                 "SELECT status, status_detail FROM gmail_article_links"
             ).fetchone()
 
-        self.assertEqual(result.status, "partial_failed")
-        self.assertEqual(tuple(link_row), ("failed_access", "Article access failed: login_required"))
-        self.assertEqual(article_session.manual_opened, [])
-        self.assertEqual(gmail.marked_read, [])
-
-    def test_run_once_records_failed_telegram_and_leaves_message_unread(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            workspace = Path(tmp_dir)
-            portfolio_path = workspace / "portfolio.csv"
-            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
-            connection = sqlite3.connect(":memory:")
-            migrate(connection)
-            gmail = FakeGmailIntegration(
-                [
-                    self._message(
-                        "gmail-1",
-                        '<a href="https://seekingalpha.com/article/123-aem-update">Read</a>',
-                    )
-                ]
-            )
-
-            result = run_once(
-                config=self._config(workspace, portfolio_path),
-                dependencies=OrchestratorDependencies(
-                    gmail_client=gmail,
-                    gmail_actions=gmail,
-                    article_session=FakeArticleSession(
-                        {
-                            "https://seekingalpha.com/article/123-aem-update": (
-                                "<article><h1>AEM update</h1><p>Margins improved.</p></article>"
-                            )
-                        }
-                    ),
-                    analysis_client=FakeAnalysisClient(
-                        {
-                            "relevant_assets": [
-                                {
-                                    "symbol": "AEM",
-                                    "company_name": "Agnico Eagle Mines",
-                                    "theme": "bullish",
-                                    "author_rating": None,
-                                    "quant_rating": None,
-                                    "wall_street_rating": None,
-                                    "inferred_sentiment": "bullish",
-                                    "price_targets": [],
-                                    "forward_data": [],
-                                    "action_relevance": "material_news",
-                                    "short_summary": "Relevant article.",
-                                    "confidence": 0.9,
-                                }
-                            ],
-                            "irrelevant_reason": None,
-                        }
-                    ),
-                    telegram_sender=FailingTelegram(),
-                ),
-                connection=connection,
-            )
-            link_status = connection.execute(
-                "SELECT status FROM gmail_article_links"
-            ).fetchone()["status"]
-
-        self.assertEqual(result.status, "partial_failed")
-        self.assertEqual(link_status, "failed_telegram")
-        self.assertEqual(gmail.marked_read, [])
-
-    def test_run_once_skips_telegram_when_disabled_and_processes_article(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            workspace = Path(tmp_dir)
-            portfolio_path = workspace / "portfolio.csv"
-            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
-            connection = sqlite3.connect(":memory:")
-            migrate(connection)
-            gmail = FakeGmailIntegration(
-                [
-                    self._message(
-                        "gmail-1",
-                        '<a href="https://seekingalpha.com/article/123-aem-update">Read</a>',
-                    )
-                ]
-            )
-            config = self._config(workspace, portfolio_path)
-            config = dataclasses.replace(
-                config,
-                telegram_enabled=False,
-                telegram_bot_token="",
-                telegram_chat_id="",
-            )
-
-            result = run_once(
-                config=config,
-                dependencies=OrchestratorDependencies(
-                    gmail_client=gmail,
-                    gmail_actions=gmail,
-                    article_session=FakeArticleSession(
-                        {
-                            "https://seekingalpha.com/article/123-aem-update": (
-                                "<article><h1>AEM update</h1><p>Margins improved.</p></article>"
-                            )
-                        }
-                    ),
-                    analysis_client=FakeAnalysisClient(
-                        {
-                            "relevant_assets": [
-                                {
-                                    "symbol": "AEM",
-                                    "company_name": "Agnico Eagle Mines",
-                                    "theme": "bullish",
-                                    "author_rating": None,
-                                    "quant_rating": None,
-                                    "wall_street_rating": None,
-                                    "inferred_sentiment": "bullish",
-                                    "price_targets": [],
-                                    "forward_data": [],
-                                    "action_relevance": "material_news",
-                                    "short_summary": "Relevant article.",
-                                    "confidence": 0.9,
-                                }
-                            ],
-                            "irrelevant_reason": None,
-                        }
-                    ),
-                    telegram_sender=FailingTelegram(),
-                ),
-                connection=connection,
-            )
-            link_status = connection.execute(
-                "SELECT status FROM gmail_article_links"
-            ).fetchone()["status"]
-
         self.assertEqual(result.status, "success")
-        self.assertEqual(result.summaries_created, 1)
-        self.assertEqual(link_status, "processed_relevant")
-        self.assertEqual(gmail.marked_read, ["gmail-1"])
+        self.assertEqual(tuple(link_row), ("irrelevant_seen", "No material effect on current holdings."))
+        self.assertEqual(len(article_session.manual_opened), 1)
+        self.assertIn("log in", article_session.manual_opened[0][1].lower())
+        self.assertEqual(gmail.marked_read, [])
 
     def test_run_once_can_limit_processed_articles(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -528,7 +380,6 @@ class OrchestratorTests(unittest.TestCase):
                             "irrelevant_reason": "No material effect on current holdings.",
                         }
                     ),
-                    telegram_sender=TelegramCapture(),
                 ),
                 connection=connection,
                 max_articles=2,
@@ -564,7 +415,6 @@ class OrchestratorTests(unittest.TestCase):
                         analysis_client=FakeAnalysisClient(
                             {"relevant_assets": [], "irrelevant_reason": None}
                         ),
-                        telegram_sender=TelegramCapture(),
                     ),
                     connection=connection,
                 )
@@ -583,8 +433,6 @@ class OrchestratorTests(unittest.TestCase):
             openai_model="gpt-5-nano",
             prompt_version="v1",
             openai_api_key="openai-key",
-            telegram_bot_token="telegram-token",
-            telegram_chat_id="12345",
         )
 
     def _write_portfolio(self, path: Path, rows: list[dict[str, str]]) -> None:

@@ -472,6 +472,49 @@ class ArticleBrowserTests(unittest.TestCase):
         self.assertNotIn(("page_close",), calls)
         self.assertEqual(calls[-1], ("playwright_stop",))
 
+    def test_cdp_browser_returns_visible_html_when_navigation_is_aborted(self):
+        calls = []
+
+        class FakePage:
+            def goto(self, url, wait_until, timeout=None):
+                calls.append(("goto", url, wait_until, timeout))
+                raise RuntimeError("Page.goto: net::ERR_ABORTED at https://seekingalpha.com/news/1")
+
+            def content(self):
+                calls.append(("content",))
+                return "<html>Access to this page has been denied</html>"
+
+            def close(self):
+                calls.append(("page_close",))
+
+        class FakeContext:
+            def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            contexts = [FakeContext()]
+
+        class FakeChromium:
+            def connect_over_cdp(self, endpoint_url):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+            def stop(self):
+                calls.append(("playwright_stop",))
+
+        browser = CDPArticleBrowser(
+            cdp_url="http://127.0.0.1:9222",
+            playwright_factory=lambda: FakePlaywright(),
+        )
+
+        html = browser.open("https://seekingalpha.com/news/1")
+
+        self.assertIn("Access to this page has been denied", html)
+        self.assertIn(("content",), calls)
+        self.assertEqual(calls[-1], ("playwright_stop",))
+
     def test_cdp_browser_manual_session_keeps_tab_open_until_prompt_returns(self):
         calls = []
 

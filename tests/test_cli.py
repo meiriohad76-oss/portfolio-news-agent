@@ -34,15 +34,12 @@ class CliTests(unittest.TestCase):
                 "gmail_credentials_exists": False,
                 "gmail_token_exists": False,
                 "openai_api_key_present": True,
-                "telegram_bot_token_present": False,
-                "telegram_chat_id_present": False,
+                "local_llm_present": False,
                 "ready_for_gmail_check": False,
                 "ready_for_analyze_url": True,
                 "ready_for_full_run": False,
                 "blockers": [
                     "gmail_credentials_path",
-                    "TELEGRAM_BOT_TOKEN",
-                    "TELEGRAM_CHAT_ID",
                 ],
             },
         )()
@@ -294,13 +291,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env_path.write_text(
-                "\n".join(
-                    [
-                        "OPENAI_API_KEY=test-openai-key",
-                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
-                        "TELEGRAM_CHAT_ID=12345",
-                    ]
-                ),
+                "OPENAI_API_KEY=test-openai-key",
                 encoding="utf-8",
             )
 
@@ -348,7 +339,6 @@ class CliTests(unittest.TestCase):
             browser_profile_dir=Path("data/browser-profile"),
             openai_model="gpt-5-nano",
             openai_api_key="openai-key-from-dotenv",
-            telegram_enabled=False,
         )
         result = type(
             "Result",
@@ -387,7 +377,6 @@ class CliTests(unittest.TestCase):
             browser_profile_dir=Path("data/browser-profile"),
             openai_model="gpt-5-nano",
             openai_api_key="openai-key-from-dotenv",
-            telegram_enabled=False,
         )
         result = type(
             "Result",
@@ -435,7 +424,6 @@ class CliTests(unittest.TestCase):
             browser_channel="chrome",
             openai_model="gpt-5-nano",
             openai_api_key="openai-key-from-dotenv",
-            telegram_enabled=False,
         )
         browser_result = type(
             "BrowserResult",
@@ -492,7 +480,6 @@ class CliTests(unittest.TestCase):
             browser_channel="chrome",
             openai_model="gpt-5-nano",
             openai_api_key="openai-key-from-dotenv",
-            telegram_enabled=False,
         )
         browser_result = type(
             "BrowserResult",
@@ -556,7 +543,6 @@ class CliTests(unittest.TestCase):
             browser_channel="chrome",
             openai_model="gpt-5-nano",
             openai_api_key="openai-key-from-dotenv",
-            telegram_enabled=False,
         )
         browser_result = type(
             "BrowserResult",
@@ -584,7 +570,7 @@ class CliTests(unittest.TestCase):
             with self.assertRaisesRegex(ArticleAccessError, "still shows challenge_required"):
                 _prepare_article_browser_for_run(config, prompt=lambda message: None)
 
-    def test_check_gmail_loads_config_without_telegram_and_prints_probe_summary(self):
+    def test_check_gmail_loads_config_without_analysis_secret_and_prints_probe_summary(self):
         config = AppConfig(
             portfolio_file=Path("portfolio.csv"),
             gmail_sender="account@seekingalpha.com",
@@ -633,7 +619,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         load_config.assert_called_once()
         self.assertEqual(load_config.call_args.kwargs["require_openai"], False)
-        self.assertEqual(load_config.call_args.kwargs["require_telegram"], False)
         self.assertIn("Gmail check: unread_messages=1", output.getvalue())
         self.assertIn("Portfolio update", output.getvalue())
 
@@ -670,10 +655,9 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(load_config.call_args.kwargs["require_openai"], False)
-        self.assertEqual(load_config.call_args.kwargs["require_telegram"], False)
         self.assertIn("Seeking Alpha session: state=accessible", output.getvalue())
 
-    def test_analyze_url_loads_config_without_telegram_and_prints_relevant_assets(self):
+    def test_analyze_url_builds_configured_analysis_client_and_prints_relevant_assets(self):
         config = AppConfig(
             portfolio_file=Path("portfolio.csv"),
             gmail_sender="account@seekingalpha.com",
@@ -706,7 +690,7 @@ class CliTests(unittest.TestCase):
         with (
             patch("portfolio_news_agent.cli.load_config", return_value=config) as load_config,
             patch("portfolio_news_agent.cli.PlaywrightArticleBrowser"),
-            patch("portfolio_news_agent.cli.OpenAIResponsesClient") as openai_client,
+            patch("portfolio_news_agent.cli.build_analysis_client", return_value="analysis-client") as build_client,
             patch("portfolio_news_agent.cli.analyze_url_against_portfolio", return_value=result),
         ):
             from portfolio_news_agent.cli import main
@@ -719,8 +703,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(load_config.call_args.kwargs["require_openai"], True)
-        self.assertEqual(load_config.call_args.kwargs["require_telegram"], False)
-        openai_client.assert_called_once_with(api_key="openai-key-from-dotenv")
+        build_client.assert_called_once_with(config)
         self.assertIn("Analyze URL: headline=AEM update", output.getvalue())
         self.assertIn("AEM | bullish | material_news", output.getvalue())
 
@@ -738,7 +721,7 @@ class CliTests(unittest.TestCase):
         with (
             patch("portfolio_news_agent.cli.load_config", return_value=config),
             patch("portfolio_news_agent.cli.PlaywrightArticleBrowser"),
-            patch("portfolio_news_agent.cli.OpenAIResponsesClient"),
+            patch("portfolio_news_agent.cli.build_analysis_client"),
             patch(
                 "portfolio_news_agent.cli.analyze_url_against_portfolio",
                 side_effect=LLMAnalysisError("OpenAI request failed: 401 invalid_issuer"),

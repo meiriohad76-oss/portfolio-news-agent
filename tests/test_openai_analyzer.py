@@ -4,6 +4,7 @@ import unittest
 from portfolio_news_agent.openai_analyzer import (
     LLMAnalysisError,
     MAX_ANALYSIS_BODY_CHARS,
+    OllamaChatClient,
     OpenAIResponsesClient,
     analyze_article,
     build_analysis_messages,
@@ -347,3 +348,65 @@ class OpenAIAnalyzerTests(unittest.TestCase):
             )
 
         self.assertIn("OpenAI request failed", str(context.exception))
+
+    def test_ollama_wrapper_posts_native_json_chat_payload(self):
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "relevant_assets": [],
+                                    "irrelevant_reason": "No ticker-specific evidence.",
+                                }
+                            )
+                        }
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            calls.append(
+                {
+                    "url": request.full_url,
+                    "body": json.loads(request.data.decode("utf-8")),
+                    "timeout": timeout,
+                    "headers": dict(request.header_items()),
+                }
+            )
+            return FakeResponse()
+
+        client = OllamaChatClient(
+            base_url="http://10.100.102.18:11434",
+            urlopen_func=fake_urlopen,
+        )
+        result = client.create_structured_response(
+            model="qwen3.5:4b",
+            messages=[{"role": "user", "content": "Return JSON"}],
+            schema={"type": "object"},
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "relevant_assets": [],
+                "irrelevant_reason": "No ticker-specific evidence.",
+            },
+        )
+        self.assertEqual(calls[0]["url"], "http://10.100.102.18:11434/api/chat")
+        self.assertEqual(calls[0]["body"]["model"], "qwen3.5:4b")
+        self.assertEqual(calls[0]["body"]["stream"], False)
+        self.assertEqual(calls[0]["body"]["think"], False)
+        self.assertEqual(calls[0]["body"]["format"], "json")
+        self.assertEqual(calls[0]["body"]["options"]["temperature"], 0)
+        self.assertEqual(calls[0]["timeout"], 180.0)

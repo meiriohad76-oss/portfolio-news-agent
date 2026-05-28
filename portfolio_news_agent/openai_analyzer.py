@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Protocol
+from urllib import error as url_error
+from urllib import request as url_request
 
 
 VALID_SENTIMENTS = {
@@ -166,6 +168,57 @@ class OpenAIResponsesClient:
         except Exception as exc:
             raise LLMAnalysisError(f"OpenAI request failed: {_safe_exception_message(exc)}") from exc
         return _extract_json_response(response)
+
+
+class OllamaChatClient:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 180.0,
+        urlopen_func: Any = url_request.urlopen,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = float(timeout_seconds)
+        self._urlopen = urlopen_func
+
+    def create_structured_response(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "format": "json",
+            "options": {
+                "temperature": 0,
+                "num_ctx": 32768,
+            },
+        }
+        request = url_request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self._urlopen(request, timeout=self.timeout_seconds) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except url_error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise LLMAnalysisError(
+                f"Ollama request failed with HTTP {exc.code}: {_safe_exception_message(Exception(detail))}"
+            ) from exc
+        except Exception as exc:
+            raise LLMAnalysisError(f"Ollama request failed: {_safe_exception_message(exc)}") from exc
+
+        content = _ollama_message_content(response_payload)
+        return _loads_json(content)
 
 
 def analyze_article(
@@ -399,6 +452,17 @@ def _extract_json_response(response: Any) -> dict[str, Any]:
     if isinstance(response, dict):
         return response
     raise LLMAnalysisError("OpenAI response did not include output_text")
+
+
+def _ollama_message_content(response: Any) -> str:
+    if not isinstance(response, dict):
+        raise LLMAnalysisError("Ollama response must be a JSON object")
+    message = response.get("message")
+    if isinstance(message, dict) and isinstance(message.get("content"), str):
+        return message["content"]
+    if isinstance(response.get("response"), str):
+        return str(response["response"])
+    raise LLMAnalysisError("Ollama response did not include message.content")
 
 
 def _coerce_response_payload(response: Any) -> Any:

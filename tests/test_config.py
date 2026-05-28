@@ -9,7 +9,12 @@ from portfolio_news_agent.config import ConfigError, load_config
 
 @contextmanager
 def isolated_secret_environment(**overrides):
-    names = {"OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", *overrides.keys()}
+    names = {
+        "OPENAI_API_KEY",
+        "AGENCY_LOCAL_LLM_BASE_URL",
+        "AGENCY_LOCAL_LLM_MODEL",
+        *overrides.keys(),
+    }
     old_values = {name: os.environ.get(name) for name in names}
     try:
         for name in names:
@@ -47,7 +52,6 @@ class ConfigLoadingTests(unittest.TestCase):
                         'openai_model: "gpt-5-nano"',
                         'browser_channel: "chrome"',
                         'prompt_version: "v1"',
-                        "telegram_enabled: true",
                         "mark_relevant_as_read: true",
                         "leave_irrelevant_unread: true",
                     ]
@@ -58,8 +62,6 @@ class ConfigLoadingTests(unittest.TestCase):
                 "\n".join(
                     [
                         "OPENAI_API_KEY=test-openai-key",
-                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
-                        "TELEGRAM_CHAT_ID=12345",
                     ]
                 ),
                 encoding="utf-8",
@@ -70,8 +72,6 @@ class ConfigLoadingTests(unittest.TestCase):
 
             self.assertEqual(config.gmail_sender, "account@seekingalpha.com")
             self.assertEqual(config.openai_api_key, "test-openai-key")
-            self.assertEqual(config.telegram_bot_token, "test-telegram-token")
-            self.assertEqual(config.telegram_chat_id, "12345")
             self.assertEqual(config.browser_channel, "chrome")
             self.assertEqual(config.browser_cdp_url, "http://127.0.0.1:9222")
             self.assertEqual(config.prompt_version, "v1")
@@ -104,8 +104,6 @@ class ConfigLoadingTests(unittest.TestCase):
                 "\n".join(
                     [
                         "OPENAI_API_KEY=test-openai-key",
-                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
-                        "TELEGRAM_CHAT_ID=12345",
                     ]
                 ),
                 encoding="utf-8",
@@ -139,8 +137,6 @@ class ConfigLoadingTests(unittest.TestCase):
                 "\n".join(
                     [
                         "OPENAI_API_KEY=test-openai-key",
-                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
-                        "TELEGRAM_CHAT_ID=12345",
                     ]
                 ),
                 encoding="utf-8",
@@ -173,8 +169,7 @@ class ConfigLoadingTests(unittest.TestCase):
             env_path.write_text(
                 "\n".join(
                     [
-                        "TELEGRAM_BOT_TOKEN=super-secret-token",
-                        "TELEGRAM_CHAT_ID=12345",
+                        "SOME_OTHER_SECRET=super-secret-token",
                     ]
                 ),
                 encoding="utf-8",
@@ -210,8 +205,6 @@ class ConfigLoadingTests(unittest.TestCase):
                 "\n".join(
                     [
                         "OPENAI_API_KEY=from-env-file",
-                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
-                        "TELEGRAM_CHAT_ID=12345",
                     ]
                 ),
                 encoding="utf-8-sig",
@@ -246,12 +239,40 @@ class ConfigLoadingTests(unittest.TestCase):
                     config_path=config_path,
                     env_path=env_path,
                     require_openai=False,
-                    require_telegram=False,
                 )
 
             self.assertEqual(config.openai_api_key, "")
-            self.assertEqual(config.telegram_bot_token, "")
-            self.assertEqual(config.telegram_chat_id, "")
+
+    def test_can_use_local_ollama_without_openai_secret(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config_path = workspace / "config.yaml"
+            env_path = workspace / ".env"
+
+            config_path.write_text(
+                "\n".join(
+                    [
+                        f'portfolio_file: "{workspace / "portfolio.csv"}"',
+                        'gmail_sender: "account@seekingalpha.com"',
+                        f'database_path: "{workspace / "data" / "portfolio_news.db"}"',
+                        f'browser_profile_dir: "{workspace / "data" / "browser-profile"}"',
+                        'openai_model: "gpt-5-nano"',
+                        'llm_provider: "local_ollama"',
+                        'local_llm_base_url: "http://10.100.102.18:11434"',
+                        'local_llm_model: "qwen3.5:4b"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with isolated_secret_environment():
+                config = load_config(config_path=config_path, env_path=env_path)
+
+            self.assertEqual(config.llm_provider, "local_ollama")
+            self.assertEqual(config.local_llm_base_url, "http://10.100.102.18:11434")
+            self.assertEqual(config.local_llm_model, "qwen3.5:4b")
+            self.assertEqual(config.analysis_model, "qwen3.5:4b")
+            self.assertEqual(config.openai_api_key, "")
 
 
 if __name__ == "__main__":

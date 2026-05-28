@@ -207,7 +207,7 @@ def _goto_for_content(page: object, url: str) -> None:
     try:
         page.goto(url, wait_until="domcontentloaded")
     except Exception as exc:
-        if _is_navigation_timeout(exc):
+        if _is_navigation_timeout(exc) or _is_navigation_aborted(exc):
             return
         raise
 
@@ -216,6 +216,11 @@ def _is_navigation_timeout(exc: Exception) -> bool:
     error_name = exc.__class__.__name__.lower()
     message = str(exc).lower()
     return "timeout" in error_name and "goto" in message
+
+
+def _is_navigation_aborted(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "goto" in message and "err_aborted" in message
 
 
 def _prompt_for_manual_action(prompt: Callable[[str], None], prompt_message: str) -> None:

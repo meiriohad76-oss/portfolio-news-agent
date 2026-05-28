@@ -27,10 +27,7 @@ class LocalSetupTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env_example.write_text(
-                "OPENAI_API_KEY=\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_CHAT_ID=\n",
-                encoding="utf-8",
-            )
+            env_example.write_text("OPENAI_API_KEY=\n", encoding="utf-8")
 
             result = initialize_local_setup(
                 config_path=config_path,
