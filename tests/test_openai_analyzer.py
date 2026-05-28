@@ -102,6 +102,38 @@ class OpenAIAnalyzerTests(unittest.TestCase):
         self.assertEqual(payload["article"]["body_characters_original"], len(long_body))
         self.assertTrue(payload["article"]["body_truncated"])
 
+    def test_v2_prompt_contract_uses_deeper_body_and_restricts_macro_fanout(self):
+        body = "ASML direct order backlog improved. " * 1200
+
+        messages = build_analysis_messages(
+            article={
+                "headline": "Semiconductor cycle looks better",
+                "source_url": "https://seekingalpha.com/article/semis",
+                "body_text": body,
+            },
+            portfolio_assets=[
+                {"symbol": "ASML", "name": "ASML Holding"},
+                {"symbol": "NVDA", "name": "Nvidia"},
+            ],
+            commodity_exposures={},
+        )
+
+        payload = json.loads(messages[1]["content"])
+        system_prompt = messages[0]["content"]
+
+        self.assertEqual(MAX_ANALYSIS_BODY_CHARS, 30_000)
+        self.assertLessEqual(len(payload["article"]["body_text"]), 30_000)
+        self.assertIn("Goal:", system_prompt)
+        self.assertIn("company-specific evidence", system_prompt)
+        self.assertIn("Do not list every related portfolio stock", system_prompt)
+        self.assertIn("Return JSON only", system_prompt)
+        self.assertIn("analysis_goal", payload)
+        self.assertIn("ticker_relevance_rules", payload)
+        self.assertIn("evidence_requirements", payload)
+        self.assertIn("output_contract", payload)
+        self.assertIn("direct company-specific evidence", " ".join(payload["ticker_relevance_rules"]))
+        self.assertIn("macro", " ".join(payload["ticker_relevance_rules"]).lower())
+
     def test_mocked_single_stock_response_returns_relevant_asset(self):
         client = FakeAnalysisClient(
             {
@@ -177,6 +209,60 @@ class OpenAIAnalyzerTests(unittest.TestCase):
         )
 
         self.assertEqual([asset["symbol"] for asset in result["relevant_assets"]], ["AEM"])
+
+    def test_broad_article_fanout_keeps_only_tickers_with_direct_article_evidence(self):
+        client = FakeAnalysisClient(
+            {
+                "relevant_assets": [
+                    {
+                        "symbol": "ASML",
+                        "company_name": "ASML Holding",
+                        "theme": "bullish",
+                        "inferred_sentiment": "somewhat_bullish",
+                        "action_relevance": "portfolio_attention",
+                        "short_summary": "ASML backlog is directly discussed.",
+                        "confidence": 0.82,
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "company_name": "Nvidia",
+                        "theme": "bullish",
+                        "inferred_sentiment": "somewhat_bullish",
+                        "action_relevance": "portfolio_attention",
+                        "short_summary": "Generic semiconductor exposure.",
+                        "confidence": 0.62,
+                    },
+                    {
+                        "symbol": "AMZN",
+                        "company_name": "Amazon",
+                        "theme": "bullish",
+                        "inferred_sentiment": "somewhat_bullish",
+                        "action_relevance": "portfolio_attention",
+                        "short_summary": "Generic consumer exposure.",
+                        "confidence": 0.61,
+                    },
+                ],
+                "irrelevant_reason": None,
+            }
+        )
+
+        result = analyze_article(
+            client=client,
+            model="gpt-5-nano",
+            article={
+                "headline": "Semiconductor cycle improves",
+                "body_text": "ASML order backlog improved, while the broader sector outlook is better.",
+            },
+            portfolio_assets=[
+                {"symbol": "ASML", "name": "ASML Holding"},
+                {"symbol": "NVDA", "name": "Nvidia"},
+                {"symbol": "AMZN", "name": "Amazon.com"},
+            ],
+            commodity_exposures={},
+            prompt_version="v2",
+        )
+
+        self.assertEqual([asset["symbol"] for asset in result["relevant_assets"]], ["ASML"])
 
     def test_mocked_irrelevant_response_returns_no_assets(self):
         client = FakeAnalysisClient(

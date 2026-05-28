@@ -82,6 +82,40 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertTrue(database_path.parent.is_dir())
             self.assertTrue(browser_profile_dir.is_dir())
 
+    def test_defaults_to_prompt_version_v2_when_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            config_path = workspace / "config.yaml"
+            env_path = workspace / ".env"
+
+            config_path.write_text(
+                "\n".join(
+                    [
+                        f'portfolio_file: "{workspace / "portfolio.csv"}"',
+                        'gmail_sender: "account@seekingalpha.com"',
+                        f'database_path: "{workspace / "data" / "portfolio_news.db"}"',
+                        f'browser_profile_dir: "{workspace / "data" / "browser-profile"}"',
+                        'openai_model: "gpt-5-nano"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "OPENAI_API_KEY=test-openai-key",
+                        "TELEGRAM_BOT_TOKEN=test-telegram-token",
+                        "TELEGRAM_CHAT_ID=12345",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with isolated_secret_environment():
+                config = load_config(config_path=config_path, env_path=env_path)
+
+            self.assertEqual(config.prompt_version, "v2")
+
     def test_rejects_unknown_browser_channel(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)

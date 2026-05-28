@@ -21,7 +21,7 @@ class AppConfig:
     browser_cdp_url: str | None = None
     gmail_credentials_path: Path = Path("data/secrets/gmail_credentials.json")
     gmail_token_path: Path = Path("data/secrets/gmail_token.json")
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     telegram_enabled: bool = True
     mark_relevant_as_read: bool = True
     leave_irrelevant_unread: bool = True
@@ -96,7 +96,7 @@ def load_config(
         gmail_credentials_path=gmail_credentials_path,
         gmail_token_path=gmail_token_path,
         openai_model=str(raw_config["openai_model"]),
-        prompt_version=str(raw_config.get("prompt_version", "v1")),
+        prompt_version=str(raw_config.get("prompt_version", "v2")),
         telegram_enabled=telegram_enabled,
         mark_relevant_as_read=_as_bool(raw_config.get("mark_relevant_as_read", True)),
         leave_irrelevant_unread=_as_bool(raw_config.get("leave_irrelevant_unread", True)),

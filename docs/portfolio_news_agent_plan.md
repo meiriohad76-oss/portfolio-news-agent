@@ -442,7 +442,7 @@ gmail_sender: "account@seekingalpha.com"
 database_path: "data/portfolio_news.db"
 browser_profile_dir: "data/browser-profile"
 openai_model: "gpt-5-nano"
-prompt_version: "v1"
+prompt_version: "v2"
 telegram_enabled: true
 mark_relevant_as_read: true
 leave_irrelevant_unread: true

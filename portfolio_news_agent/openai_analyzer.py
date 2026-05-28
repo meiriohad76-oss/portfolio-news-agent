@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 
 
@@ -40,7 +41,80 @@ SAFE_ASSET_FIELDS = {
     "wall_street_rating",
 }
 
-MAX_ANALYSIS_BODY_CHARS = 5_000
+MAX_ANALYSIS_BODY_CHARS = 30_000
+
+ANALYSIS_GOAL = (
+    "Identify whether this Seeking Alpha article changes the investment thesis, "
+    "risk profile, catalyst path, valuation, or monitoring priority for any "
+    "supplied portfolio ticker."
+)
+
+TICKER_RELEVANCE_RULES = [
+    "Only include a ticker in relevant_assets when the article gives direct "
+    "company-specific evidence for that ticker.",
+    "Direct evidence includes explicit company discussion, named ticker or company "
+    "dependency, quoted financial metrics, guidance, rating changes, price targets, "
+    "earnings, margins, demand, management commentary, regulatory/legal events, or "
+    "other material facts tied to that company.",
+    "A broad macro, sector, commodity, rate, inflation, or index article is context "
+    "only unless it directly ties the macro point to a supplied ticker.",
+    "Do not list every related portfolio stock for a broad macro or sector article.",
+    "Do not infer missing ticker impact from industry membership alone.",
+    "Use only portfolio symbols supplied in the payload.",
+]
+
+EVIDENCE_REQUIREMENTS = [
+    "Use hard evidence from the article body: numbers, dates, direct company names, "
+    "ratings, price targets, guidance, earnings, margins, demand signals, risks, "
+    "regulatory/legal events, or management commentary.",
+    "Make each short_summary specific enough for the user to understand the evidence "
+    "without reopening the article.",
+    "If evidence is weak, generic, or only sector-level, return no relevant asset and "
+    "explain that in irrelevant_reason.",
+    "Do not invent facts, prices, ratings, or relationships not present in the article.",
+]
+
+OUTPUT_CONTRACT = [
+    "Return JSON only, matching the requested schema exactly.",
+    "Do not provide trading advice or order instructions.",
+    "Use inferred_sentiment to describe the article's company-specific implication, "
+    "not the author's general market mood.",
+    "Use confidence from 0.0 to 1.0 based on specificity and strength of evidence.",
+]
+
+ANALYSIS_SYSTEM_PROMPT = (
+    "Goal: "
+    + ANALYSIS_GOAL
+    + " You classify Seeking Alpha articles against a user's portfolio as an "
+    "evidence extractor and portfolio context analyst. Require company-specific "
+    "evidence before marking a ticker relevant. Do not list every related portfolio "
+    "stock for broad macro, sector, commodity, rate, inflation, or index articles. "
+    "Return JSON only using the requested schema. Do not provide trading advice. "
+    "Use only portfolio symbols supplied in the payload."
+)
+
+COMMON_COMPANY_NAME_TOKENS = {
+    "ADR",
+    "AG",
+    "AND",
+    "CLASS",
+    "CO",
+    "COMPANY",
+    "CORP",
+    "CORPORATION",
+    "GROUP",
+    "HOLDING",
+    "HOLDINGS",
+    "INC",
+    "LIMITED",
+    "LLC",
+    "LP",
+    "LTD",
+    "NV",
+    "PLC",
+    "SA",
+    "THE",
+}
 
 
 class AnalysisClient(Protocol):
@@ -125,6 +199,11 @@ def analyze_article(
                 schema=schema,
             )
             result = parse_and_validate_analysis(response, allowed_symbols=allowed_symbols)
+            result = _filter_assets_without_article_evidence(
+                result,
+                article=article,
+                portfolio_assets=portfolio_assets,
+            )
             result["prompt_version"] = prompt_version
             result["llm_model"] = model
             return result
@@ -144,6 +223,11 @@ def build_analysis_messages(
     body_text = str(article.get("body_text") or "")
     trimmed_body = _trim_article_body(body_text)
     payload = {
+        "prompt_contract_version": "v2",
+        "analysis_goal": ANALYSIS_GOAL,
+        "ticker_relevance_rules": TICKER_RELEVANCE_RULES,
+        "evidence_requirements": EVIDENCE_REQUIREMENTS,
+        "output_contract": OUTPUT_CONTRACT,
         "article": {
             "headline": article.get("headline"),
             "author": article.get("author"),
@@ -159,11 +243,7 @@ def build_analysis_messages(
     return [
         {
             "role": "system",
-            "content": (
-                "You classify Seeking Alpha articles against a user's portfolio. "
-                "Return only the requested JSON schema. Do not provide trading advice. "
-                "Use only portfolio symbols supplied in the payload."
-            ),
+            "content": ANALYSIS_SYSTEM_PROMPT,
         },
         {
             "role": "user",
@@ -305,7 +385,8 @@ def _messages_for_attempt(
         "role": "user",
         "content": (
             "Retry using exactly the required JSON schema. Do not include symbols "
-            "outside the provided portfolio. Do not infer missing facts."
+            "outside the provided portfolio. Do not infer missing facts. Only return "
+            "a ticker when the article contains direct company-specific evidence."
         ),
     }
     return [*messages, retry_instruction]
@@ -353,6 +434,107 @@ def _raise_for_refusal_or_incomplete(data: Any) -> None:
         raise LLMAnalysisError("Model refusal")
     if data.get("status") == "incomplete" or data.get("incomplete_details"):
         raise LLMAnalysisError("Incomplete model output")
+
+
+def _filter_assets_without_article_evidence(
+    result: dict[str, Any],
+    *,
+    article: dict[str, Any],
+    portfolio_assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    relevant_assets = result.get("relevant_assets")
+    if not isinstance(relevant_assets, list) or not relevant_assets:
+        return result
+
+    article_text = "\n".join(
+        str(article.get(key) or "")
+        for key in ("headline", "author", "article_date", "source_url", "body_text")
+    )
+    portfolio_by_symbol = {
+        str(asset.get("symbol", "")).strip().upper(): asset
+        for asset in portfolio_assets
+        if str(asset.get("symbol", "")).strip()
+    }
+
+    kept_assets = []
+    for asset in relevant_assets:
+        symbol = str(asset.get("symbol", "")).strip().upper()
+        terms = _asset_evidence_terms(asset, portfolio_by_symbol.get(symbol, {}))
+        if _article_contains_evidence_term(article_text, terms):
+            kept_assets.append(asset)
+
+    if len(kept_assets) == len(relevant_assets):
+        return result
+
+    filtered = dict(result)
+    filtered["relevant_assets"] = kept_assets
+    if not kept_assets and not filtered.get("irrelevant_reason"):
+        filtered["irrelevant_reason"] = (
+            "Article did not include ticker-specific evidence for the returned portfolio symbols."
+        )
+    return filtered
+
+
+def _asset_evidence_terms(
+    asset: dict[str, Any],
+    portfolio_asset: dict[str, Any],
+) -> list[tuple[str, str]]:
+    symbol = str(asset.get("symbol", "")).strip().upper()
+    terms: list[tuple[str, str]] = []
+    if symbol:
+        terms.append(("symbol", symbol))
+
+    for value in (
+        portfolio_asset.get("name"),
+        portfolio_asset.get("company_name"),
+        asset.get("company_name"),
+    ):
+        for term in _company_name_terms(value):
+            terms.append(("name", term))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in terms:
+        key = (item[0], item[1].upper())
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
+def _company_name_terms(value: Any) -> list[str]:
+    if value is None:
+        return []
+    normalized = re.sub(r"[^A-Za-z0-9]+", " ", str(value)).strip()
+    if not normalized:
+        return []
+
+    terms = []
+    if len(normalized) >= 4:
+        terms.append(normalized)
+
+    for token in normalized.split():
+        token_upper = token.upper()
+        if len(token) >= 4 and token_upper not in COMMON_COMPANY_NAME_TOKENS:
+            terms.append(token)
+    return terms
+
+
+def _article_contains_evidence_term(
+    article_text: str,
+    terms: list[tuple[str, str]],
+) -> bool:
+    for term_type, term in terms:
+        if not term:
+            continue
+        if term_type == "symbol":
+            flags = 0 if len(term) <= 3 else re.IGNORECASE
+        else:
+            flags = re.IGNORECASE
+        pattern = rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])"
+        if re.search(pattern, article_text, flags=flags):
+            return True
+    return False
 
 
 def _safe_asset(asset: dict[str, Any]) -> dict[str, Any]:

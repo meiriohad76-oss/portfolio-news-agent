@@ -7,7 +7,7 @@ browser_cdp_url: "http://127.0.0.1:9222"
 gmail_credentials_path: "data/secrets/gmail_credentials.json"
 gmail_token_path: "data/secrets/gmail_token.json"
 openai_model: "gpt-5-nano"
-prompt_version: "v1"
+prompt_version: "v2"
 telegram_enabled: true
 mark_relevant_as_read: true
 leave_irrelevant_unread: true
