@@ -379,6 +379,52 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_once.call_args.kwargs["max_articles"], 50)
         self.assertIn("emails=50", output.getvalue())
 
+    def test_once_can_use_prior_login_acknowledgement_after_user_confirms(self):
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            openai_model="gpt-5-nano",
+            openai_api_key="openai-key-from-dotenv",
+            telegram_enabled=False,
+        )
+        result = type(
+            "Result",
+            (),
+            {
+                "status": "success",
+                "emails_found": 50,
+                "articles_processed": 50,
+                "summaries_created": 3,
+                "failed_links": 0,
+            },
+        )()
+
+        with (
+            patch("portfolio_news_agent.cli.load_config", return_value=config),
+            patch("portfolio_news_agent.cli._prepare_article_browser_for_run") as prepare_browser,
+            patch("portfolio_news_agent.cli.build_default_dependencies"),
+            patch("portfolio_news_agent.cli.run_once", return_value=result),
+        ):
+            from portfolio_news_agent.cli import main
+
+            exit_code = main(
+                [
+                    "--once",
+                    "--login-acknowledged",
+                    "--sa-login-check-url",
+                    "https://seekingalpha.com/article/4909785-micron-the-market-is-very-wrong",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(prepare_browser.call_args.kwargs["login_acknowledged"])
+        self.assertEqual(
+            prepare_browser.call_args.kwargs["check_url"],
+            "https://seekingalpha.com/article/4909785-micron-the-market-is-very-wrong",
+        )
+
     def test_prepare_article_browser_requires_manual_login_ack_in_user_chrome(self):
         config = AppConfig(
             portfolio_file=Path("portfolio.csv"),
@@ -435,6 +481,68 @@ class CliTests(unittest.TestCase):
         requeue.assert_called_once_with(config)
         self.assertIn("login acknowledged", output.getvalue())
         self.assertIn("Requeued 7 previously failed Seeking Alpha article link(s)", output.getvalue())
+
+    def test_prepare_article_browser_can_verify_prior_acknowledgement_without_prompt(self):
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            browser_cdp_url="http://127.0.0.1:9222",
+            browser_channel="chrome",
+            openai_model="gpt-5-nano",
+            openai_api_key="openai-key-from-dotenv",
+            telegram_enabled=False,
+        )
+        browser_result = type(
+            "BrowserResult",
+            (),
+            {
+                "status": "already_running",
+                "cdp_url": "http://127.0.0.1:9222",
+                "command": [],
+                "pid": None,
+                "ready": True,
+            },
+        )()
+
+        class FakeSession:
+            def __init__(self):
+                self.opened = []
+                self.manual_calls = []
+
+            def open(self, url):
+                self.opened.append(url)
+                return "<article><h1>Micron article</h1><p>Readable article body.</p></article>"
+
+            def open_for_manual_session(self, url, *, prompt, prompt_message):
+                self.manual_calls.append((url, prompt_message))
+                raise AssertionError("prior acknowledgement must not prompt again")
+
+        fake_session = FakeSession()
+
+        with (
+            patch("portfolio_news_agent.cli.start_debug_browser", return_value=browser_result),
+            patch("portfolio_news_agent.cli.CDPArticleBrowser", return_value=fake_session),
+            patch("portfolio_news_agent.cli.requeue_retryable_article_links_for_config", return_value=0),
+        ):
+            from portfolio_news_agent.cli import _prepare_article_browser_for_run
+
+            output = StringIO()
+            with redirect_stdout(output):
+                _prepare_article_browser_for_run(
+                    config,
+                    prompt=lambda message: None,
+                    login_acknowledged=True,
+                    check_url="https://seekingalpha.com/article/4909785-micron-the-market-is-very-wrong",
+                )
+
+        self.assertEqual(
+            fake_session.opened,
+            ["https://seekingalpha.com/article/4909785-micron-the-market-is-very-wrong"],
+        )
+        self.assertEqual(fake_session.manual_calls, [])
+        self.assertIn("verified", output.getvalue())
 
     def test_prepare_article_browser_blocks_if_acknowledged_session_is_still_challenged(self):
         from portfolio_news_agent.article_browser import ArticleAccessError

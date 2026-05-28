@@ -108,6 +108,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum queued Seeking Alpha article links to open and analyze during --once.",
     )
+    parser.add_argument(
+        "--login-acknowledged",
+        action="store_true",
+        help=(
+            "For --once only: user already completed Seeking Alpha login/article access "
+            "in the managed Chrome window; verify the session and skip the prompt."
+        ),
+    )
+    parser.add_argument(
+        "--sa-login-check-url",
+        default=DEFAULT_SEEKING_ALPHA_URL,
+        help="Seeking Alpha URL used to verify the acknowledged Chrome session before --once.",
+    )
     return parser
 
 
@@ -243,7 +256,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        _prepare_article_browser_for_run(config)
+        _prepare_article_browser_for_run(
+            config,
+            login_acknowledged=args.login_acknowledged,
+            check_url=args.sa_login_check_url,
+        )
         result = run_once(
             config=config,
             dependencies=build_default_dependencies(config),
@@ -264,7 +281,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _prepare_article_browser_for_run(config, *, prompt=input) -> None:
+def _prepare_article_browser_for_run(
+    config,
+    *,
+    prompt=input,
+    login_acknowledged: bool = False,
+    check_url: str = DEFAULT_SEEKING_ALPHA_URL,
+) -> None:
     if not config.browser_cdp_url:
         raise ArticleAccessError(
             "Full email/article runs require a user Chrome CDP session. "
@@ -273,11 +296,14 @@ def _prepare_article_browser_for_run(config, *, prompt=input) -> None:
         )
     cdp_url = _ensure_cdp_browser_started(config)
     session = CDPArticleBrowser(cdp_url=cdp_url)
-    html = session.open_for_manual_session(
-        DEFAULT_SEEKING_ALPHA_URL,
-        prompt=prompt,
-        prompt_message=SEEKING_ALPHA_LOGIN_ACK_PROMPT,
-    )
+    if login_acknowledged:
+        html = session.open(check_url)
+    else:
+        html = session.open_for_manual_session(
+            check_url,
+            prompt=prompt,
+            prompt_message=SEEKING_ALPHA_LOGIN_ACK_PROMPT,
+        )
     access_state = detect_access_state(html)
     if access_state != "accessible":
         raise ArticleAccessError(
@@ -285,10 +311,16 @@ def _prepare_article_browser_for_run(config, *, prompt=input) -> None:
             f"still shows {access_state}. Complete the login/challenge in the "
             "opened Chrome window, verify an article opens, then rerun --once."
         )
-    print(
-        "Seeking Alpha login acknowledged: accessible in the same Chrome session. "
-        "Starting email/article processing."
-    )
+    if login_acknowledged:
+        print(
+            "Seeking Alpha login acknowledged and verified in the same Chrome session. "
+            "Starting email/article processing."
+        )
+    else:
+        print(
+            "Seeking Alpha login acknowledged: accessible in the same Chrome session. "
+            "Starting email/article processing."
+        )
     requeued = requeue_retryable_article_links_for_config(config)
     _print_requeued_links(requeued)
 
