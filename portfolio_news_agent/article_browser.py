@@ -148,7 +148,7 @@ class CDPArticleBrowser:
         try:
             browser = self._connect_browser(playwright)
             context = _default_cdp_context(browser)
-            page = _visible_cdp_page(context)
+            page = context.new_page()
             should_close_page = True
             try:
                 _goto_for_content(page, url)

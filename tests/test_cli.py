@@ -305,6 +305,7 @@ class CliTests(unittest.TestCase):
             )
 
             with (
+                patch("portfolio_news_agent.cli._prepare_article_browser_for_run") as prepare_browser,
                 patch("portfolio_news_agent.cli.build_default_dependencies") as build_deps,
                 patch("portfolio_news_agent.cli.run_once") as run_once,
             ):
@@ -335,6 +336,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Run finished: status=success", output.getvalue())
+        prepare_browser.assert_called_once()
         build_deps.assert_called_once()
         run_once.assert_called_once()
 
@@ -362,6 +364,7 @@ class CliTests(unittest.TestCase):
 
         with (
             patch("portfolio_news_agent.cli.load_config", return_value=config),
+            patch("portfolio_news_agent.cli._prepare_article_browser_for_run"),
             patch("portfolio_news_agent.cli.build_default_dependencies"),
             patch("portfolio_news_agent.cli.run_once", return_value=result) as run_once,
         ):
@@ -376,7 +379,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_once.call_args.kwargs["max_articles"], 50)
         self.assertIn("emails=50", output.getvalue())
 
-    def test_once_with_cdp_browser_starts_session_and_requeues_failed_access_links(self):
+    def test_prepare_article_browser_requires_manual_login_ack_in_user_chrome(self):
         config = AppConfig(
             portfolio_file=Path("portfolio.csv"),
             gmail_sender="account@seekingalpha.com",
@@ -388,17 +391,6 @@ class CliTests(unittest.TestCase):
             openai_api_key="openai-key-from-dotenv",
             telegram_enabled=False,
         )
-        result = type(
-            "Result",
-            (),
-            {
-                "status": "success",
-                "emails_found": 1,
-                "articles_processed": 1,
-                "summaries_created": 1,
-                "failed_links": 0,
-            },
-        )()
         browser_result = type(
             "BrowserResult",
             (),
@@ -410,40 +402,79 @@ class CliTests(unittest.TestCase):
                 "ready": True,
             },
         )()
-        sa_result = type(
-            "SaResult",
-            (),
-            {
-                "url": "https://seekingalpha.com",
-                "access_state": "accessible",
-                "headline": "Seeking Alpha",
-                "canonical_url": "https://seekingalpha.com",
-                "body_characters": 1000,
-            },
-        )()
+
+        class FakeSession:
+            def __init__(self):
+                self.manual_calls = []
+
+            def open_for_manual_session(self, url, *, prompt, prompt_message):
+                self.manual_calls.append((url, prompt_message))
+                prompt(prompt_message)
+                return "<html><body>Logged in Seeking Alpha session</body></html>"
+
+        fake_session = FakeSession()
+        prompts = []
 
         with (
-            patch("portfolio_news_agent.cli.load_config", return_value=config),
             patch("portfolio_news_agent.cli.start_debug_browser", return_value=browser_result) as start_browser,
-            patch("portfolio_news_agent.cli.check_seeking_alpha_session", return_value=sa_result) as check_sa,
+            patch("portfolio_news_agent.cli.CDPArticleBrowser", return_value=fake_session) as cdp,
             patch("portfolio_news_agent.cli.requeue_retryable_article_links_for_config", return_value=7) as requeue,
-            patch("portfolio_news_agent.cli.build_default_dependencies") as build_deps,
-            patch("portfolio_news_agent.cli.run_once", return_value=result) as run_once,
         ):
-            from portfolio_news_agent.cli import main
+            from portfolio_news_agent.cli import _prepare_article_browser_for_run
 
             output = StringIO()
             with redirect_stdout(output):
-                exit_code = main(["--once"])
+                _prepare_article_browser_for_run(config, prompt=prompts.append)
 
-        self.assertEqual(exit_code, 0)
         start_browser.assert_called_once()
-        check_sa.assert_called_once()
-        self.assertEqual(check_sa.call_args.kwargs["allow_manual_recovery"], False)
+        cdp.assert_called_once_with(cdp_url="http://127.0.0.1:9222")
+        self.assertEqual(fake_session.manual_calls[0][0], "https://seekingalpha.com")
+        self.assertIn("Log in", fake_session.manual_calls[0][1])
+        self.assertIn("same Chrome session", fake_session.manual_calls[0][1])
+        self.assertEqual(prompts, [fake_session.manual_calls[0][1]])
         requeue.assert_called_once_with(config)
-        build_deps.assert_called_once()
-        run_once.assert_called_once()
+        self.assertIn("login acknowledged", output.getvalue())
         self.assertIn("Requeued 7 previously failed Seeking Alpha article link(s)", output.getvalue())
+
+    def test_prepare_article_browser_blocks_if_acknowledged_session_is_still_challenged(self):
+        from portfolio_news_agent.article_browser import ArticleAccessError
+
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            browser_cdp_url="http://127.0.0.1:9222",
+            browser_channel="chrome",
+            openai_model="gpt-5-nano",
+            openai_api_key="openai-key-from-dotenv",
+            telegram_enabled=False,
+        )
+        browser_result = type(
+            "BrowserResult",
+            (),
+            {
+                "status": "already_running",
+                "cdp_url": "http://127.0.0.1:9222",
+                "command": [],
+                "pid": None,
+                "ready": True,
+            },
+        )()
+
+        class FakeSession:
+            def open_for_manual_session(self, url, *, prompt, prompt_message):
+                prompt(prompt_message)
+                return "<html>Access to this page has been denied</html>"
+
+        with (
+            patch("portfolio_news_agent.cli.start_debug_browser", return_value=browser_result),
+            patch("portfolio_news_agent.cli.CDPArticleBrowser", return_value=FakeSession()),
+        ):
+            from portfolio_news_agent.cli import _prepare_article_browser_for_run
+
+            with self.assertRaisesRegex(ArticleAccessError, "still shows challenge_required"):
+                _prepare_article_browser_for_run(config, prompt=lambda message: None)
 
     def test_check_gmail_loads_config_without_telegram_and_prints_probe_summary(self):
         config = AppConfig(

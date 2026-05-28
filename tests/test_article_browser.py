@@ -532,6 +532,55 @@ class ArticleBrowserTests(unittest.TestCase):
         self.assertEqual(html, "<article><h1>AEM update</h1><p>Readable.</p></article>")
         self.assertNotIn(("page_close",), calls)
 
+    def test_cdp_browser_manual_session_opens_fresh_user_tab_even_when_pages_exist(self):
+        calls = []
+
+        class ExistingPage:
+            def goto(self, url, wait_until):
+                calls.append(("existing_goto", url, wait_until))
+
+        class FakePage:
+            def goto(self, url, wait_until):
+                calls.append(("new_goto", url, wait_until))
+
+            def content(self):
+                return "<html>Logged in</html>"
+
+        class FakeContext:
+            pages = [ExistingPage()]
+
+            def new_page(self):
+                calls.append(("new_page",))
+                return FakePage()
+
+        class FakeBrowser:
+            contexts = [FakeContext()]
+
+        class FakeChromium:
+            def connect_over_cdp(self, endpoint_url):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+            def stop(self):
+                calls.append(("playwright_stop",))
+
+        browser = CDPArticleBrowser(
+            cdp_url="http://127.0.0.1:9222",
+            playwright_factory=lambda: FakePlaywright(),
+        )
+
+        browser.open_for_manual_session(
+            "https://seekingalpha.com",
+            prompt=lambda message: None,
+            prompt_message="Complete login.",
+        )
+
+        self.assertIn(("new_page",), calls)
+        self.assertNotIn(("existing_goto", "https://seekingalpha.com", "domcontentloaded"), calls)
+        self.assertIn(("new_goto", "https://seekingalpha.com", "domcontentloaded"), calls)
+
     def test_cdp_browser_manual_session_leaves_tab_open_when_prompt_has_no_stdin(self):
         calls = []
 

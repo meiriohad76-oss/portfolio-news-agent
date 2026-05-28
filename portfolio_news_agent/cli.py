@@ -8,6 +8,7 @@ from portfolio_news_agent.article_browser import (
     ArticleAccessError,
     CDPArticleBrowser,
     PlaywrightArticleBrowser,
+    detect_access_state,
 )
 from portfolio_news_agent.browser_launcher import start_debug_browser
 from portfolio_news_agent.capability_checks import (
@@ -15,6 +16,14 @@ from portfolio_news_agent.capability_checks import (
     analyze_url_against_portfolio,
     check_gmail_access,
     check_seeking_alpha_session,
+)
+
+
+SEEKING_ALPHA_LOGIN_ACK_PROMPT = (
+    "Log in to Seeking Alpha in the opened Chrome window, complete any security "
+    "challenge, then open one Seeking Alpha article successfully in that same "
+    "Chrome session. Press Enter here only after the login/article access works. "
+    "The email agent will process email links using this same Chrome session."
 )
 from portfolio_news_agent.config import ConfigError, load_config
 from portfolio_news_agent.gmail_api import GmailApiClient, GmailSetupError, build_gmail_service
@@ -255,21 +264,31 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _prepare_article_browser_for_run(config) -> None:
+def _prepare_article_browser_for_run(config, *, prompt=input) -> None:
     if not config.browser_cdp_url:
-        return
-    cdp_url = _ensure_cdp_browser_started(config)
-    result = check_seeking_alpha_session(
-        DEFAULT_SEEKING_ALPHA_URL,
-        session=CDPArticleBrowser(cdp_url=cdp_url),
-        allow_manual_recovery=False,
-    )
-    _print_seeking_alpha_check(result)
-    if result.access_state != "accessible":
         raise ArticleAccessError(
-            "Seeking Alpha is not accessible in the dedicated browser session. "
-            "Complete login/challenge in the opened browser, then rerun --once."
+            "Full email/article runs require a user Chrome CDP session. "
+            "Set browser_cdp_url in config.yaml and start the run again so the "
+            "agent can use the same logged-in Chrome window."
         )
+    cdp_url = _ensure_cdp_browser_started(config)
+    session = CDPArticleBrowser(cdp_url=cdp_url)
+    html = session.open_for_manual_session(
+        DEFAULT_SEEKING_ALPHA_URL,
+        prompt=prompt,
+        prompt_message=SEEKING_ALPHA_LOGIN_ACK_PROMPT,
+    )
+    access_state = detect_access_state(html)
+    if access_state != "accessible":
+        raise ArticleAccessError(
+            "Seeking Alpha login was acknowledged, but the same Chrome session "
+            f"still shows {access_state}. Complete the login/challenge in the "
+            "opened Chrome window, verify an article opens, then rerun --once."
+        )
+    print(
+        "Seeking Alpha login acknowledged: accessible in the same Chrome session. "
+        "Starting email/article processing."
+    )
     requeued = requeue_retryable_article_links_for_config(config)
     _print_requeued_links(requeued)
 
