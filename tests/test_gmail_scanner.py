@@ -254,6 +254,45 @@ class GmailScannerTests(unittest.TestCase):
             2,
         )
 
+    def test_scan_can_limit_unread_messages(self):
+        connection = sqlite3.connect(":memory:")
+        migrate(connection)
+        import_id = create_portfolio_import(
+            connection,
+            source_path="portfolio.csv",
+            source_hash="hash-1",
+        )
+        client = FakeGmailClient(
+            [
+                self._message(
+                    message_id=f"gmail-{index}",
+                    thread_id=f"thread-{index}",
+                    subject=f"AEM update {index}",
+                    html_body=(
+                        f'<a href="https://seekingalpha.com/article/{index}-aem-update">'
+                        "Read</a>"
+                    ),
+                )
+                for index in range(3)
+            ]
+        )
+
+        result = scan_unread_seeking_alpha_messages(
+            connection,
+            gmail_client=client,
+            sender="account@seekingalpha.com",
+            portfolio_import_id=import_id,
+            prompt_version="v2",
+            max_emails=2,
+        )
+
+        self.assertEqual(result.emails_found, 2)
+        self.assertEqual(result.links_queued, 2)
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM gmail_messages").fetchone()[0],
+            2,
+        )
+
     def _message(self, message_id, thread_id, subject, html_body):
         encoded_body = base64.urlsafe_b64encode(html_body.encode("utf-8")).decode("ascii")
         return {

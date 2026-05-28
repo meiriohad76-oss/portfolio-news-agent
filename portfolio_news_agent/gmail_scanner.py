@@ -73,9 +73,12 @@ def scan_unread_seeking_alpha_messages(
     sender: str,
     portfolio_import_id: int,
     prompt_version: str,
+    max_emails: int | None = None,
 ) -> GmailScanResult:
     query = build_gmail_query(sender)
     message_refs = gmail_client.search_messages(query)
+    if max_emails is not None:
+        message_refs = message_refs[: max(0, int(max_emails))]
     links_found = 0
     links_queued = 0
     links_skipped = 0

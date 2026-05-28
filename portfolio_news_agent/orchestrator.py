@@ -91,6 +91,8 @@ def run_once(
     config: AppConfig,
     dependencies: OrchestratorDependencies,
     connection: sqlite3.Connection | None = None,
+    max_emails: int | None = None,
+    max_articles: int | None = None,
 ) -> RunOnceResult:
     owns_connection = connection is None
     if connection is None:
@@ -112,6 +114,7 @@ def run_once(
             sender=config.gmail_sender,
             portfolio_import_id=portfolio_import.import_id,
             prompt_version=config.prompt_version,
+            max_emails=max_emails,
         )
 
         articles_processed = 0
@@ -119,7 +122,7 @@ def run_once(
         failed_links = 0
         touched_message_ids: set[int] = set()
 
-        for link in get_queued_article_links(connection):
+        for link in get_queued_article_links(connection, limit=max_articles):
             touched_message_ids.add(int(link["gmail_message_id"]))
             try:
                 update_gmail_article_link_status(

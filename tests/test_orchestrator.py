@@ -485,6 +485,67 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(link_status, "processed_relevant")
         self.assertEqual(gmail.marked_read, ["gmail-1"])
 
+    def test_run_once_can_limit_processed_articles(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            portfolio_path = workspace / "portfolio.csv"
+            self._write_portfolio(portfolio_path, [{"Symbol": "AEM", "Name": "Agnico Eagle Mines"}])
+            connection = sqlite3.connect(":memory:")
+            migrate(connection)
+            gmail = FakeGmailIntegration(
+                [
+                    self._message(
+                        "gmail-1",
+                        '<a href="https://seekingalpha.com/article/101-aem-update">One</a>'
+                        '<a href="https://seekingalpha.com/article/102-aem-update">Two</a>'
+                        '<a href="https://seekingalpha.com/article/103-aem-update">Three</a>',
+                    )
+                ]
+            )
+            article_session = FakeArticleSession(
+                {
+                    "https://seekingalpha.com/article/101-aem-update": (
+                        "<article><h1>AEM one</h1><p>AEM margins improved.</p></article>"
+                    ),
+                    "https://seekingalpha.com/article/102-aem-update": (
+                        "<article><h1>AEM two</h1><p>AEM costs declined.</p></article>"
+                    ),
+                    "https://seekingalpha.com/article/103-aem-update": (
+                        "<article><h1>AEM three</h1><p>AEM output rose.</p></article>"
+                    ),
+                }
+            )
+
+            result = run_once(
+                config=self._config(workspace, portfolio_path),
+                dependencies=OrchestratorDependencies(
+                    gmail_client=gmail,
+                    gmail_actions=gmail,
+                    article_session=article_session,
+                    analysis_client=FakeAnalysisClient(
+                        {
+                            "relevant_assets": [],
+                            "irrelevant_reason": "No material effect on current holdings.",
+                        }
+                    ),
+                    telegram_sender=TelegramCapture(),
+                ),
+                connection=connection,
+                max_articles=2,
+            )
+            link_statuses = connection.execute(
+                "SELECT status FROM gmail_article_links ORDER BY source_url"
+            ).fetchall()
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.articles_processed, 2)
+        self.assertEqual(len(article_session.opened), 2)
+        self.assertEqual(
+            [row["status"] for row in link_statuses],
+            ["irrelevant_seen", "irrelevant_seen", "queued"],
+        )
+        self.assertEqual(gmail.marked_read, [])
+
     def test_run_once_marks_run_failed_when_scan_crashes(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir)

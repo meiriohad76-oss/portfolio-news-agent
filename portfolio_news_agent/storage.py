@@ -538,15 +538,22 @@ def get_assets_for_import(
     return [dict(row) for row in rows]
 
 
-def get_queued_article_links(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = connection.execute(
-        """
+def get_queued_article_links(
+    connection: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    query = """
         SELECT *
         FROM gmail_article_links
         WHERE status = 'queued'
         ORDER BY id
         """
-    ).fetchall()
+    parameters: tuple[Any, ...] = ()
+    if limit is not None:
+        query += " LIMIT ?"
+        parameters = (max(0, int(limit)),)
+    rows = connection.execute(query, parameters).fetchall()
     return [dict(row) for row in rows]
 
 

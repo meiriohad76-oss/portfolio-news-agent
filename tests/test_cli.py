@@ -338,6 +338,44 @@ class CliTests(unittest.TestCase):
         build_deps.assert_called_once()
         run_once.assert_called_once()
 
+    def test_once_passes_email_and_article_limits_to_orchestrator(self):
+        config = AppConfig(
+            portfolio_file=Path("portfolio.csv"),
+            gmail_sender="account@seekingalpha.com",
+            database_path=Path("data/portfolio_news.db"),
+            browser_profile_dir=Path("data/browser-profile"),
+            openai_model="gpt-5-nano",
+            openai_api_key="openai-key-from-dotenv",
+            telegram_enabled=False,
+        )
+        result = type(
+            "Result",
+            (),
+            {
+                "status": "success",
+                "emails_found": 50,
+                "articles_processed": 50,
+                "summaries_created": 3,
+                "failed_links": 0,
+            },
+        )()
+
+        with (
+            patch("portfolio_news_agent.cli.load_config", return_value=config),
+            patch("portfolio_news_agent.cli.build_default_dependencies"),
+            patch("portfolio_news_agent.cli.run_once", return_value=result) as run_once,
+        ):
+            from portfolio_news_agent.cli import main
+
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--once", "--max-emails", "50", "--max-articles", "50"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_once.call_args.kwargs["max_emails"], 50)
+        self.assertEqual(run_once.call_args.kwargs["max_articles"], 50)
+        self.assertIn("emails=50", output.getvalue())
+
     def test_once_with_cdp_browser_starts_session_and_requeues_failed_access_links(self):
         config = AppConfig(
             portfolio_file=Path("portfolio.csv"),

@@ -87,6 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=".env",
         help="Path to the dotenv secrets file.",
     )
+    parser.add_argument(
+        "--max-emails",
+        type=int,
+        default=None,
+        help="Maximum unread Seeking Alpha emails to scan during --once.",
+    )
+    parser.add_argument(
+        "--max-articles",
+        type=int,
+        default=None,
+        help="Maximum queued Seeking Alpha article links to open and analyze during --once.",
+    )
     return parser
 
 
@@ -226,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_once(
             config=config,
             dependencies=build_default_dependencies(config),
+            max_emails=args.max_emails,
+            max_articles=args.max_articles,
         )
     except GmailSetupError as exc:
         print(f"Gmail setup error: {exc}", file=sys.stderr)
